@@ -25,31 +25,33 @@ import matplotlib
 from common.sci_parser import SuperConformalIndex
 
 
+data_per_theories = dict()
 
-def cluster_pair(sampled: TheorySampler, grid: np.ndarray, kde_bandwidth: float):
-    sample_stat = sampled.get_theory_stats()
 
-    n_theory = sampled.get_theory_num()
-    assert n_theory == 2
+def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
+    stats = sampler.get_theory_stats()
+    theories = stats.select("Name").rdd.flatMap(lambda x: x).collect()
+    for theory in theories:
+        data_per_theories[theory] = [[] for _ in range(n_iter)]
 
-    theories = sample_stat.select("Name").rdd.flatMap(lambda x: x).collect()
+    for i in range(n_iter):
+        sampled_data = sampler.get_manual_sample(theories, n_per_theory)
+        rows = sampled_data.df.collect()
 
-    theories_dict = dict()
-    for i in range(len(theories)):
-        theories_dict[theories[i]] = i
+        for row in rows:
+            data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_dimensions(grid, kde_bandwidth))
 
-    data_num = sampled.df.count()
-    theory_data = []
-    sci_data: list[SuperConformalIndex] = []
+        print(f"Data generation iteration {i + 1} completed.")
 
-    rows = sampled.df.collect()
+    for theory in theories:
+        for i in range(n_iter):
+            data_per_theories[theory][i] = np.stack(data_per_theories[theory][i])
 
-    for i in range(data_num):
-        theory_data.append(theories_dict[rows[i]["Name"]])
-        sci_data.append(SuperConformalIndex(rows[i]["SCI"]))
 
-    X = np.stack([sci_data[i].featurize_dimensions(grid, kde_bandwidth) for i in range(data_num)])
-    y_true = np.asarray(theory_data)
+def cluster_pair(theory1_input: np.ndarray, theory2_input: np.ndarray):
+    data_num = theory1_input.shape[0]
+    X = np.vstack((theory1_input, theory2_input))
+    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
 
     Xs = StandardScaler().fit_transform(X)
 
@@ -61,7 +63,7 @@ def cluster_pair(sampled: TheorySampler, grid: np.ndarray, kde_bandwidth: float)
     )
     X_tsne = reduction_model.fit_transform(Xs)
 
-    kmeans = KMeans(n_clusters=n_theory, n_init=10, random_state=42)
+    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
     kmeans.fit(X_tsne)
     y_pred = kmeans.labels_
 
@@ -110,28 +112,43 @@ if __name__ == '__main__':
 
     accuracy = [[0.0 for _ in range(n_theory)] for _ in range(n_theory)]
 
-    theories_df = theory_sampler.spark.createDataFrame([(t,) for t in theories], ["theory"])
-    pairs_df = theories_df.alias("t1").crossJoin(theories_df.alias("t2")).filter(F.col("t1.theory") < F.col("t2.theory"))
-    print(f"Number of pairs: {pairs_df.count()}")
+    pairs = [(theories[i], theories[j]) for i in range(n_theory) for j in range(i + 1, n_theory)]
+    print(f"Number of pairs: {len(pairs)}")
 
-    def pair_calculation(row):
-        theory1, theory2 = row["t1.theory"], row["t2.theory"]
-        print(theory1, theory2)
+    build_data(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+
+    def pair_calculation(theory1: str, theory2: str):
+        print(f"Calculating accuracy for {theory1} and {theory2}")
         acc = []
 
-        for _ in range(n_iter):
-            pair_data = theory_sampler.get_manual_sample([theory1, theory2], n_sample)
-            acc.append(cluster_pair(pair_data, GRID, KDE_BANDWIDTH))
+        for i in range(n_iter):
+            acc.append(cluster_pair(data_per_theories[theory1][i], data_per_theories[theory2][i]))
 
-        mean_acc = np.mean(acc)
+        mean_acc = float(np.mean(acc))
         accuracy[theories_dict[theory1]][theories_dict[theory2]] = mean_acc
+        accuracy[theories_dict[theory2]][theories_dict[theory1]] = mean_acc
         print(f"Accuracy for {theory1} and {theory2}: {mean_acc}")
 
-        return mean_acc
+    with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
+        executor.map(lambda arg: pair_calculation(*arg), pairs)
 
-    results_rdd = pairs_df.rdd.map(pair_calculation)
+    save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
+    os.makedirs(save_dir, exist_ok=True)
 
-    results_list = results_rdd.collect()
-    print(results_list)
+    with open(f"{save_dir}/sci_exp_cluster_pairwise.csv", 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Theories"] + theories)
+        for i in range(n_theory):
+            writer.writerow([theories[i]] + accuracy[i])
 
-    print(accuracy)
+    plt.style.use('default')
+    plt.rcParams['figure.figsize'] = (16, 12)
+    plt.rcParams['font.size'] = 15
+
+    fig, ax = plt.subplots()
+    fig.suptitle("Pairwise clustering accuracies")
+
+    cmap_plot = ax.matshow(accuracy, cmap='gray')
+    fig.colorbar(cmap_plot, ax=ax)
+
+    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise.png')
