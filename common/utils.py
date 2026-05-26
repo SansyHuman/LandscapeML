@@ -3,6 +3,7 @@ import json
 import os
 from typing import Union, Any
 
+from pyspark.ml.feature import Bucketizer
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 import pyspark.sql.dataframe as ps
@@ -512,3 +513,31 @@ def manual_sample_theories(df: ps.DataFrame, theory_col: str, a_col: str, c_col:
     sampled = ranked.filter(F.col("rank") <= n_per_theory)
 
     return sampled.drop("rand", "rank")
+
+
+def balanced_sample_bins(df: ps.DataFrame, charge_col: str, min_charge: float, max_charge: float, n_bins: int, n_per_bins: int):
+    """
+    Pick data evenly from specified range of charges.
+    """
+
+    # Filter rows with specified charge range
+    filtered = df.filter((F.col(charge_col) >= min_charge) & (F.col(charge_col) < max_charge))
+
+    # Discretize into n_bins bins
+    bin_step = (max_charge - min_charge) / n_bins
+    splits = [min_charge + i * bin_step for i in range(n_bins)] + [float("inf")]
+    discretizer = Bucketizer(
+        splits=splits,
+        inputCol=charge_col,
+        outputCol="bucket"
+    )
+    bucketed = discretizer.transform(filtered)
+
+    # Assign random row numbers within each bucket
+    window = Window.partitionBy("bucket").orderBy(F.rand())
+    ranked = bucketed.withColumn("rank", F.row_number().over(window))
+
+    # keep only up to n_per_bins rows per bucket
+    sampled = ranked.filter(F.col("rank") <= n_per_bins)
+
+    return sampled.drop("rank", "bucket")

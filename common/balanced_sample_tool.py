@@ -1,5 +1,6 @@
 from typing import Union, Self
 
+from pyspark.ml.feature import Bucketizer
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 import numpy as np
@@ -7,7 +8,7 @@ import matplotlib.pyplot as plt
 import math
 import pyspark.sql.dataframe as ps
 
-from common.utils import balanced_sample_theories, manual_sample_theories
+from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins
 
 
 class TheorySampler:
@@ -77,10 +78,32 @@ class TheorySampler:
     def get_theory_stats(self) -> ps.DataFrame:
         return self.df.groupBy("Name").count().orderBy(F.col("count").desc())
 
+    def get_bins_stats(self, charge_col: str, min_charge: float, max_charge: float, n_bins: int) -> ps.DataFrame:
+        filtered = self.df.filter((F.col(charge_col) >= min_charge) & (F.col(charge_col) < max_charge))
+
+        bin_step = (max_charge - min_charge) / n_bins
+        splits = [min_charge + i * bin_step for i in range(n_bins)] + [float("inf")]
+
+        discretizer = Bucketizer(
+            splits=splits,
+            inputCol=charge_col,
+            outputCol="bucket"
+        )
+        bucketed = discretizer.transform(filtered)
+
+        bucket_counts = bucketed.groupBy("bucket").count()
+
+        ranges = [(i, f"[{splits[i]}, {splits[i + 1]})") for i in range(len(splits) - 1)]
+        ranges_df = self.spark.createDataFrame(ranges, ["bucket", "range"])
+
+        bucket_summary = bucket_counts.join(ranges_df, on="bucket", how="inner")
+        return bucket_summary
+
     def get_balanced_sample(self, a_range: tuple[float, float], c_range: tuple[float, float],
                             n_per_theory: int) -> Self:
         sample = TheorySampler()
         sample.filename = self.filename
+        sample.spark = self.spark
 
         assert self.df is not None
         sample.df = balanced_sample_theories(self.df, "Name", "CentralChargeA", "CentralChargeC",
@@ -91,6 +114,7 @@ class TheorySampler:
     def get_manual_sample(self, theories: list[str], n_per_theory: int) -> Self:
         sample = TheorySampler()
         sample.filename = self.filename
+        sample.spark = self.spark
 
         assert self.df is not None
         sample.df = manual_sample_theories(self.df, "Name", "CentralChargeA", "CentralChargeC", theories, n_per_theory)
@@ -100,6 +124,7 @@ class TheorySampler:
     def get_theories_above_count(self, min_count: int) -> Self:
         sample = TheorySampler()
         sample.filename = self.filename
+        sample.spark = self.spark
 
         assert self.df is not None
         stats = self.get_theory_stats()
@@ -108,6 +133,16 @@ class TheorySampler:
         names = filtered.select("Name").rdd.flatMap(lambda x: x).collect()
 
         sample.df = self.df.filter(F.col("Name").isin(names))
+
+        return sample
+
+    def get_balanced_bins_sample(self, charge_col: str, min_charge: float, max_charge: float, n_bins: int, n_per_bins: int) -> Self:
+        sample = TheorySampler()
+        sample.filename = self.filename
+        sample.spark = self.spark
+
+        assert self.df is not None
+        sample.df = balanced_sample_bins(self.df, charge_col, min_charge, max_charge, n_bins, n_per_bins)
 
         return sample
 
