@@ -108,10 +108,14 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device):
             outputs = model(x)
             y_pred += outputs.cpu().numpy().ravel().tolist()
 
+    y_real = np.asarray(y_real)
+    y_pred = np.asarray(y_pred)
     r2 = r2_score(y_real, y_pred)
     rmse = root_mean_squared_error(y_real, y_pred)
+    error = np.sum(np.abs(y_real - y_pred) / y_real)
+    error /= len(y_real)
 
-    return y_real, y_pred, r2, rmse
+    return y_real, y_pred, r2, rmse, float(error)
 
 
 if __name__ == "__main__":
@@ -198,7 +202,8 @@ if __name__ == "__main__":
 
     n_epochs = int(input("Enter number of epochs: "))
 
-    checkpoint_path = f"../data/regression/checkpoint_sci_exp_regression_nn_{central_charge[-1].lower()}.tar"
+    file_suffix = f"{central_charge[-1].lower()}_{GRID_LO}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
+    checkpoint_path = f"../data/regression/checkpoint_sci_exp_regression_nn_{file_suffix}.tar"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
         checkpoint = torch.load(checkpoint_path)
@@ -240,6 +245,7 @@ if __name__ == "__main__":
 
     r2_scores = []
     rmse_scores = []
+    errors = []
     save_dir = f"../data/regression/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
@@ -248,9 +254,10 @@ if __name__ == "__main__":
     plt.rcParams['font.size'] = 15
 
     for i in range(n_validate):
-        y_real, y_pred, r2, rmse = validate(dataloader_validate[i], model, device)
+        y_real, y_pred, r2, rmse, error = validate(dataloader_validate[i], model, device)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
+        errors.append(f"{error * 100.0}%")
 
         plt.close('all')
 
@@ -266,8 +273,9 @@ if __name__ == "__main__":
 
         plt.savefig(f"{save_dir}/sci_exp_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
 
-    with open(f"{save_dir}/sci_exp_regression_nn_{central_charge[-1].lower()}.csv", 'w', newline='') as f:
+    with open(f"{save_dir}/sci_exp_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(["Score"] + [i + 1 for i in range(n_validate)])
         writer.writerow(["R2"] + r2_scores)
         writer.writerow(["RMSE"] + rmse_scores)
+        writer.writerow(["Error"] + errors)
