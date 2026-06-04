@@ -27,6 +27,8 @@ class SuperConformalIndex:
 
         # dimensions of operators in the order of increasing
         self.dims: list[float] = []
+        # the operator's dimensions and coefficient of the sci terms
+        self.spectrum: dict[float, int] = dict()
         # dimensions of relevant operators in the order of increasing
         self.relevant_dims: list[float] = []
         # the number of operators with each dimensions
@@ -41,6 +43,11 @@ class SuperConformalIndex:
             if dim is not None:
                 dim = dim / 2.0 # t^3R, dim = 3R/2
                 cnt = round(term.coefficient)
+
+                if dim in self.spectrum:
+                    self.spectrum[dim] += cnt
+                else:
+                    self.spectrum[dim] = cnt
 
                 if dim < 3.0: # relevant
                     if dim in self.relevant_spectrum:
@@ -121,6 +128,54 @@ class SuperConformalIndex:
         kde = kernel_density_estimation(v, grid, kde_bandwidth)
 
         uniq = np.unique(v.round(4))
+        gaps = np.diff(uniq) if uniq.size > 1 else np.array([0.0])
+        gap_feat = [
+            gaps.min(),
+            gaps.max(),
+            gaps.mean(),
+            gaps.std(),
+            np.median(gaps),
+            np.quantile(gaps, 0.25),
+            np.quantile(gaps, 0.75),
+        ]
+
+        # Why is there length of exponents vector and log of length together?
+        summary = [
+            len(v),
+            np.log(len(v)),
+            v.mean(),
+            v.std(),
+            v.min(),
+            v.max(),
+            np.median(v),
+            np.quantile(v, 0.25),
+            np.quantile(v, 0.75),
+        ]
+
+        return np.concatenate([kde, gap_feat, summary])
+
+    def featurize_sci(self, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
+        """
+        Gets the feature vector of sci coefficients and exponents.
+        :param grid: vector of grid values. It should be a vector of sequential numbers with constant steps.
+        :param kde_bandwidth: bandwidth of the feature grid.
+        :return: feature vector of sci coefficients and exponents.
+        """
+        v = []
+        for dim, coeff in self.spectrum.items():
+            if coeff > 0:
+                v += [dim for _ in range(coeff)]
+            else:
+                v += [dim for _ in range(-coeff)]
+
+        v = np.asarray(v, dtype=float)
+
+        if v.size == 0:
+            return np.zeros(len(grid) + 7 + 9)
+
+        kde = kernel_density_estimation(v, grid, kde_bandwidth)
+
+        uniq = np.unique(np.abs(v.round(4)))
         gaps = np.diff(uniq) if uniq.size > 1 else np.array([0.0])
         gap_feat = [
             gaps.min(),
