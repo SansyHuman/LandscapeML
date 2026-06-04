@@ -1,25 +1,23 @@
 import datetime
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.metrics import r2_score, root_mean_squared_error
-from torch.optim import Optimizer
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-import numpy as np
 import sys
 import os
 import csv
+import numpy as np
+import torch
+from sklearn.metrics import r2_score, root_mean_squared_error
+from torch.optim import Optimizer
+from torch.utils.data import DataLoader
+import torch.nn as nn
 import matplotlib.pyplot as plt
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
-from common.utils import FullyConnectedNetwork
+from common.utils import GenericDataset, FullyConnectedNetwork
 
 
 def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
-               n_bins: int, n_per_bins: int, n_train: int, n_test: int, n_validate: int):
+               n_bins: int, n_per_bins: int, n_train: int, n_test: int, n_validate: int,
+               grid: np.ndarray, kde_bandwidth: float):
     input_train = []
     output_train = []
     input_test = []
@@ -33,9 +31,10 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
         input_data = []
         output_data = []
         for row in rows:
-            input_data.append(torch.tensor(SuperConformalIndex(row["SCI"]).relevant_dims).unsqueeze(1))
+            input_data.append(SuperConformalIndex(row["SCI"]).featurize_relevant_spectrum(grid, kde_bandwidth))
             output_data.append([float(row[charge_col])])
 
+        input_data = np.stack(input_data)
         output_data = np.stack(output_data)
 
         input_set.append(input_data)
@@ -59,48 +58,13 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
     return input_train, output_train, input_test, output_test, input_validate, output_validate
 
 
-# Dataset with variable-length float sequences
-class SequenceDataset(Dataset):
-    def __init__(self, sequences, outputs):
-        self.sequences = sequences
-        self.outputs = outputs
-
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, index):
-        return self.sequences[index], self.outputs[index]
-
-
-# Custom collate function to pad sequences
-def collate_fn(batch):
-    sequences, outputs = zip(*batch)
-    lengths = torch.tensor([len(seq) for seq in sequences])
-    padded = pad_sequence(sequences, batch_first=True)
-    outputs = torch.tensor(np.array(outputs))
-    return padded, lengths, outputs
-
-
-class GRURegressionModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers, *args):
-        super(GRURegressionModel, self).__init__()
-        self.gru = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
-        self.fc = FullyConnectedNetwork(hidden_dim, 1, *args)
-
-    def forward(self, x, lengths):
-        packed = pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
-        packed_out, hidden = self.gru(packed)
-        last_hidden = hidden[-1]
-        return self.fc(last_hidden)
-
-
 def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device):
     model.train()
-    for x, lengths, y in loader:
+    for x, y in loader:
         x = x.to(device)
         y = y.to(device)
 
-        y_pred = model(x, lengths)
+        y_pred = model(x)
         loss = criterion(y_pred, y)
 
         optimizer.zero_grad()
@@ -114,11 +78,11 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
     test_cnt = 0
 
     with torch.no_grad():
-        for x, lengths, y in loader:
+        for x, y in loader:
             x = x.to(device)
             y = y.to(device)
 
-            y_pred = model(x, lengths)
+            y_pred = model(x)
             loss = criterion(y_pred, y)
 
             test_loss += loss.item()
@@ -137,11 +101,11 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device):
     y_pred = []
 
     with torch.no_grad():
-        for x, lengths, y in loader:
+        for x, y in loader:
             x = x.to(device)
             y_real += y.cpu().numpy().ravel().tolist()
 
-            outputs = model(x, lengths)
+            outputs = model(x)
             y_pred += outputs.cpu().numpy().ravel().tolist()
 
     y_real = np.asarray(y_real)
@@ -168,6 +132,13 @@ if __name__ == "__main__":
     for row in stats.collect():
         print(row.asDict())
 
+    GRID_LO = float(input("Enter lower bound of feature grid: "))
+    GRID_HI = float(input("Enter upper bound of feature grid: "))
+    GRID_STEP = float(input("Enter step size of feature grid: "))
+
+    GRID = np.arange(GRID_LO, GRID_HI + GRID_STEP, GRID_STEP)
+    KDE_BANDWIDTH = float(input("Enter bandwidth of feature grid: "))
+
     central_charge = ""
     tmp = int(input("Enter which charge to use; 1. a, 2. c\n>>>"))
     if tmp == 1:
@@ -187,37 +158,43 @@ if __name__ == "__main__":
 
     input_train, output_train, input_test, output_test, input_validate, output_validate = build_data(
         theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
-        n_train, n_test, n_validate
+        n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
     )
 
-    dataset_train = [SequenceDataset(input_train[i], output_train[i]) for i in range(n_train)]
-    dataset_test = [SequenceDataset(input_test[i], output_test[i]) for i in range(n_test)]
-    dataset_validate = [SequenceDataset(input_validate[i], output_validate[i]) for i in range(n_validate)]
+    dataset_train = [GenericDataset(input_train[i], output_train[i]) for i in range(n_train)]
+    dataset_test = [GenericDataset(input_test[i], output_test[i]) for i in range(n_test)]
+    dataset_validate = [GenericDataset(input_validate[i], output_validate[i]) for i in range(n_validate)]
 
-    dataloader_train = [DataLoader(dataset_train[i], batch_size=32, collate_fn=collate_fn, shuffle=True) for i in range(n_train)]
-    dataloader_test = [DataLoader(dataset_test[i], batch_size=32, collate_fn=collate_fn, shuffle=False) for i in range(n_test)]
-    dataloader_validate = [DataLoader(dataset_validate[i], batch_size=32, collate_fn=collate_fn, shuffle=False) for i in range(n_validate)]
-    for index, (padded, lengths, outputs) in enumerate(dataloader_train[0]):
+    dataloader_train = [DataLoader(dataset_train[i], batch_size=32, shuffle=True) for i in range(n_train)]
+    dataloader_test = [DataLoader(dataset_test[i], batch_size=32, shuffle=False) for i in range(n_test)]
+    dataloader_validate = [DataLoader(dataset_validate[i], batch_size=32, shuffle=False) for i in range(n_validate)]
+    for index, (x, y) in enumerate(dataloader_train[0]):
         print(f'{index}/{len(dataloader_train)}', end=' ')
-        print('x shape: ', padded.shape, end=' ')
-        print('y shape: ', outputs.shape)
+        print('x shape: ', x.shape, end=' ')
+        print('y shape: ', y.shape)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    hidden_dim = 16
-    model = GRURegressionModel(
-        1, hidden_dim, 4,
-        (hidden_dim * 4, nn.GELU()),
-        (hidden_dim * 4, nn.GELU()),
-        (hidden_dim * 16, nn.GELU()),
-        (hidden_dim * 16, nn.GELU()),
-        (hidden_dim * 16, nn.GELU()),
-        (hidden_dim * 16, nn.GELU()),
-        (hidden_dim * 8, nn.GELU()),
-        (hidden_dim * 8, nn.GELU()),
-        (hidden_dim * 2, nn.GELU()),
-        (hidden_dim * 1, nn.GELU())
+    input_num = input_train[0].shape[1]
+    model = FullyConnectedNetwork(
+        input_num, 1,
+        (input_num * 4, nn.GELU()),
+        (input_num * 4, nn.GELU()),
+        (input_num * 16, nn.GELU()),
+        (input_num * 16, nn.GELU()),
+        (input_num * 32, nn.GELU()),
+        (input_num * 32, nn.GELU()),
+        (input_num * 32, nn.GELU()),
+        (input_num * 32, nn.GELU()),
+        (input_num * 8, nn.GELU()),
+        (input_num * 8, nn.GELU()),
+        (input_num * 2, nn.GELU()),
+        (input_num * 1, nn.GELU()),
     ).to(device)
+
+    print("Charge calculation model shape: ", model(
+        torch.randn(32, input_num).to(device)
+    ).shape)
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -225,8 +202,8 @@ if __name__ == "__main__":
 
     n_epochs = int(input("Enter number of epochs: "))
 
-    file_suffix = f"{central_charge[-1].lower()}"
-    checkpoint_path = f"../data/regression/checkpoint_sci_exp_regression_rnn_{file_suffix}.tar"
+    file_suffix = f"{central_charge[-1].lower()}_{GRID_LO}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
+    checkpoint_path = f"../data/regression/checkpoint_spectrum_regression_nn_{file_suffix}.tar"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
         checkpoint = torch.load(checkpoint_path)
@@ -253,8 +230,7 @@ if __name__ == "__main__":
 
         total_loss /= total_cnt
         total_error /= total_cnt
-        print(
-            f"Epoch {epoch + 1}/{n_epochs} test loss: {total_loss} error: {total_error * 100} %")
+        print(f"Epoch {epoch + 1}/{n_epochs} test loss: {total_loss} error: {total_error * 100} %")
         if total_loss < best_loss:
             best_loss = total_loss
             print('New best loss obtained. Saving model...')
@@ -297,12 +273,11 @@ if __name__ == "__main__":
         ax.set_xlabel(f"Real {central_charge[-1].lower()}")
         ax.set_ylabel(f"Predicted {central_charge[-1].lower()}")
 
-        plt.savefig(f"{save_dir}/sci_exp_regression_rnn_{central_charge[-1].lower()}_{i + 1}.png")
+        plt.savefig(f"{save_dir}/spectrum_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
 
-    with open(f"{save_dir}/sci_exp_regression_rnn_{file_suffix}.csv", 'w', newline='') as f:
+    with open(f"{save_dir}/spectrum_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(["Score"] + [i + 1 for i in range(n_validate)])
         writer.writerow(["R2"] + r2_scores)
         writer.writerow(["RMSE"] + rmse_scores)
         writer.writerow(["Error"] + errors)
-
