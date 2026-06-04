@@ -11,23 +11,36 @@ import joblib
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
+from common.utils import kernel_density_estimation
 
 
 def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
                n_bins: int, n_per_bins: int, n_validate: int,
-               grid: np.ndarray, kde_bandwidth: float):
+               grid_low: float, grid_high: float, grid_step: float, kde_bandwidth: float):
     input_train = []
     output_train = []
     input_validate = []
     output_validate = []
 
     def build_dataset(data: TheorySampler, input_set, output_set):
+        grid_mono = np.arange(grid_low, grid_high + grid_step, grid_step)
+        grid_quad = np.arange(grid_low * grid_low, grid_high * grid_high + grid_step * 2, grid_step * 2)
+        grid_cube = np.arange(grid_low * grid_low * grid_low, grid_high * grid_high * grid_high + grid_step * 4, grid_step * 4)
+
         rows = data.df.collect()
 
         input_data = []
         output_data = []
         for row in rows:
-            input_data.append(SuperConformalIndex(row["SCI"]).featurize_dimensions(grid, kde_bandwidth))
+            sci = SuperConformalIndex(row["SCI"])
+            v = np.asarray(sci.dims)
+            v_quad = v[:-1] * v[1:]
+            v_cube = v[:-2] * v[1:-1] * v[2:]
+
+            mono = sci.featurize_dimensions(grid_mono, kde_bandwidth)
+            quad = kernel_density_estimation(v_quad, grid_quad, kde_bandwidth)
+            cube = kernel_density_estimation(v_cube, grid_cube, kde_bandwidth)
+            input_data.append(np.hstack((mono, quad, cube)))
             output_data.append(float(row[charge_col]))
 
         input_data = np.stack(input_data)
@@ -85,8 +98,6 @@ if __name__ == "__main__":
     GRID_LO = float(input("Enter lower bound of feature grid: "))
     GRID_HI = float(input("Enter upper bound of feature grid: "))
     GRID_STEP = float(input("Enter step size of feature grid: "))
-
-    GRID = np.arange(GRID_LO, GRID_HI + GRID_STEP, GRID_STEP)
     KDE_BANDWIDTH = float(input("Enter bandwidth of feature grid: "))
 
     central_charge = ""
@@ -106,7 +117,7 @@ if __name__ == "__main__":
 
     input_train, output_train, input_validate, output_validate = build_data(
         theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
-        n_validate, GRID, KDE_BANDWIDTH
+        n_validate, GRID_LO, GRID_HI, GRID_STEP, KDE_BANDWIDTH
     )
 
     krr = KernelRidge(kernel="rbf")
