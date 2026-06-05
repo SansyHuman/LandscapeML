@@ -125,7 +125,7 @@ class SuperConformalIndex:
         if v.size == 0:
             return np.zeros(len(grid) + 7 + 9)
 
-        kde = kernel_density_estimation(v, grid, kde_bandwidth)
+        kde = kernel_density_estimation(v, grid, kde_bandwidth, normalize=False)
 
         uniq = np.unique(v.round(4))
         gaps = np.diff(uniq) if uniq.size > 1 else np.array([0.0])
@@ -173,7 +173,7 @@ class SuperConformalIndex:
         if v.size == 0:
             return np.zeros(len(grid) + 7 + 9)
 
-        kde = kernel_density_estimation(v, grid, kde_bandwidth)
+        kde = kernel_density_estimation(v, grid, kde_bandwidth, normalize=False)
 
         uniq = np.unique(np.abs(v.round(4)))
         gaps = np.diff(uniq) if uniq.size > 1 else np.array([0.0])

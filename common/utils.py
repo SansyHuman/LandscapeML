@@ -543,12 +543,13 @@ def balanced_sample_bins(df: ps.DataFrame, charge_col: str, min_charge: float, m
     return sampled.drop("rank", "bucket")
 
 
-def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
+def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth: float, normalize=True) -> np.ndarray:
     """
     Gets the kernel density estimation of the data
     :param data: 1d data array
     :param grid: vector of grid values. It should be a vector of sequential numbers with constant steps.
     :param kde_bandwidth: bandwidth parameter for the kernel density estimation
+    :param normalize: whether to normalize the kernel density estimation
     :return: kernel density estimation values
     """
 
@@ -556,6 +557,7 @@ def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth:
 
     d = (grid[None, :] - data[:, None]) / kde_bandwidth
     kde = np.exp(-0.5 * d * d).sum(axis=0)
-    kde /= kde.sum() * grid_step + 1e-12
+    if normalize:
+        kde /= kde.sum() * grid_step + 1e-12
 
     return kde

@@ -58,7 +58,7 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
     return input_train, output_train, input_test, output_test, input_validate, output_validate
 
 
-def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device):
+def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device, c: float=0.01):
     model.train()
     for x, y in loader:
         x = x.to(device)
@@ -66,6 +66,9 @@ def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer:
 
         y_pred = model(x)
         loss = criterion(y_pred, y)
+
+        l1_norm = sum(p.abs().sum() for p in model.parameters())
+        loss += c * l1_norm
 
         optimizer.zero_grad()
         loss.backward()
@@ -85,7 +88,7 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
             y_pred = model(x)
             loss = criterion(y_pred, y)
 
-            test_loss += loss.item()
+            test_loss += loss.item() * x.size(0)
 
             y_pred = y_pred.cpu().numpy()
             y = y.cpu().numpy()
@@ -201,9 +204,9 @@ if __name__ == "__main__":
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
+    checkpoint_path = input("Enter the name of the checkpoint file: ")
 
     file_suffix = f"{central_charge[-1].lower()}_{GRID_LO}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
-    checkpoint_path = f"../data/regression/checkpoint_spectrum_regression_nn_{file_suffix}.tar"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
         checkpoint = torch.load(checkpoint_path)
@@ -214,7 +217,7 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, optimizer, device)
+            train(dataloader_train[i], model, criterion, optimizer, device, c=0.0001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
