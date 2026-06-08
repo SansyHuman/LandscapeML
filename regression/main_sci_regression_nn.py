@@ -58,7 +58,7 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
     return input_train, output_train, input_test, output_test, input_validate, output_validate
 
 
-def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device):
+def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device, c: float=0.01):
     model.train()
     for x, y in loader:
         x = x.to(device)
@@ -66,6 +66,9 @@ def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer:
 
         y_pred = model(x)
         loss = criterion(y_pred, y)
+
+        l1_norm = sum(p.abs().sum() for p in model.parameters())
+        loss += c * l1_norm
 
         optimizer.zero_grad()
         loss.backward()
@@ -85,7 +88,7 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
             y_pred = model(x)
             loss = criterion(y_pred, y)
 
-            test_loss += loss.item()
+            test_loss += loss.item() * x.size(0)
 
             y_pred = y_pred.cpu().numpy()
             y = y.cpu().numpy()
@@ -95,25 +98,28 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
 
     return test_loss, error, test_cnt
 
-def validate(loader: DataLoader, model: nn.Module, device: torch.device):
+def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device):
     model.eval()
-    y_real = []
-    y_pred = []
+    y_real = None
+    y_pred = None
 
     with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device)
-            y_real += y.cpu().numpy().ravel().tolist()
+        X = X.to(device)
+        y_real = y.cpu().numpy().ravel()
 
-            outputs = model(x)
-            y_pred += outputs.cpu().numpy().ravel().tolist()
+        outputs = model(X)
+        y_pred = outputs.cpu().numpy().ravel()
 
-    y_real = np.asarray(y_real)
-    y_pred = np.asarray(y_pred)
     r2 = r2_score(y_real, y_pred)
     rmse = root_mean_squared_error(y_real, y_pred)
     error = np.sum(np.abs(y_real - y_pred) / y_real)
     error /= len(y_real)
+
+    print("Validation stats")
+    print("=======================")
+    print(f"    R2: {r2:.4f}")
+    print(f"    RMSE: {rmse:.4f}")
+    print(f"    Error: {error:.4f}")
 
     return y_real, y_pred, r2, rmse, float(error)
 
@@ -163,11 +169,10 @@ if __name__ == "__main__":
 
     dataset_train = [GenericDataset(input_train[i], output_train[i]) for i in range(n_train)]
     dataset_test = [GenericDataset(input_test[i], output_test[i]) for i in range(n_test)]
-    dataset_validate = [GenericDataset(input_validate[i], output_validate[i]) for i in range(n_validate)]
 
     dataloader_train = [DataLoader(dataset_train[i], batch_size=32, shuffle=True) for i in range(n_train)]
     dataloader_test = [DataLoader(dataset_test[i], batch_size=32, shuffle=False) for i in range(n_test)]
-    dataloader_validate = [DataLoader(dataset_validate[i], batch_size=32, shuffle=False) for i in range(n_validate)]
+
     for index, (x, y) in enumerate(dataloader_train[0]):
         print(f'{index}/{len(dataloader_train)}', end=' ')
         print('x shape: ', x.shape, end=' ')
@@ -201,9 +206,9 @@ if __name__ == "__main__":
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
+    checkpoint_path = input("Enter the name of the checkpoint file: ")
 
     file_suffix = f"{central_charge[-1].lower()}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
-    checkpoint_path = f"../data/regression/checkpoint_sci_regression_nn_{file_suffix}.tar"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
         checkpoint = torch.load(checkpoint_path)
@@ -214,7 +219,7 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, optimizer, device)
+            train(dataloader_train[i], model, criterion, optimizer, device, 0.00001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
@@ -256,7 +261,10 @@ if __name__ == "__main__":
     plt.rcParams['font.size'] = 15
 
     for i in range(n_validate):
-        y_real, y_pred, r2, rmse, error = validate(dataloader_validate[i], model, device)
+        y_real, y_pred, r2, rmse, error = validate(
+            torch.tensor(input_validate[i], dtype=torch.float32),
+            torch.tensor(output_validate[i], dtype=torch.float32),
+            model, device)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(f"{error * 100.0}%")

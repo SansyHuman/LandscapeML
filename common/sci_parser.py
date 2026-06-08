@@ -161,21 +161,27 @@ class SuperConformalIndex:
         :param kde_bandwidth: bandwidth of the feature grid.
         :return: feature vector of sci coefficients and exponents.
         """
-        v = []
+        v_plus = []
+        v_minus = []
         for dim, coeff in self.spectrum.items():
             if coeff > 0:
-                v += [dim for _ in range(coeff)]
+                v_plus += [dim for _ in range(coeff)]
             else:
-                v += [dim for _ in range(-coeff)]
+                v_minus += [dim for _ in range(-coeff)]
+        v = v_plus + v_minus
 
-        v = np.asarray(v, dtype=float)
+        v_plus = np.asarray(v_plus, dtype=float)
+        v_minus = np.asarray(v_minus, dtype=float)
+        v = np.abs(np.asarray(v, dtype=float))
 
-        if v.size == 0:
+        if v_plus.size + v_minus.size == 0:
             return np.zeros(len(grid) + 7 + 9)
 
-        kde = kernel_density_estimation(v, grid, kde_bandwidth, normalize=False)
+        kde_plus = kernel_density_estimation(v_plus, grid, kde_bandwidth, normalize=False)
+        kde_minus = kernel_density_estimation(v_minus, grid, kde_bandwidth, normalize=False)
+        kde = kde_plus - kde_minus
 
-        uniq = np.unique(np.abs(v.round(4)))
+        uniq = np.unique(v.round(4))
         gaps = np.diff(uniq) if uniq.size > 1 else np.array([0.0])
         gap_feat = [
             gaps.min(),
