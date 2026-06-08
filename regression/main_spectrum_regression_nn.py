@@ -9,6 +9,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import shap
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
@@ -98,27 +99,37 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
 
     return test_loss, error, test_cnt
 
-def validate(loader: DataLoader, model: nn.Module, device: torch.device):
+def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device, calculate_shap):
     model.eval()
-    y_real = []
-    y_pred = []
+    y_real = None
+    y_pred = None
 
     with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device)
-            y_real += y.cpu().numpy().ravel().tolist()
+        X = X.to(device)
+        y_real = y.cpu().numpy().ravel()
 
-            outputs = model(x)
-            y_pred += outputs.cpu().numpy().ravel().tolist()
+        outputs = model(X)
+        y_pred = outputs.cpu().numpy().ravel()
 
-    y_real = np.asarray(y_real)
-    y_pred = np.asarray(y_pred)
     r2 = r2_score(y_real, y_pred)
     rmse = root_mean_squared_error(y_real, y_pred)
     error = np.sum(np.abs(y_real - y_pred) / y_real)
     error /= len(y_real)
 
-    return y_real, y_pred, r2, rmse, float(error)
+    print("Validation stats")
+    print("=======================")
+    print(f"    R2: {r2:.4f}")
+    print(f"    RMSE: {rmse:.4f}")
+    print(f"    Error: {error:.4f}")
+
+    shap_values = None
+
+    if calculate_shap:
+        print("Calculating SHAP values...")
+        explainer = shap.DeepExplainer(model, X)
+        shap_values = explainer(X)
+
+    return y_real, y_pred, r2, rmse, float(error), shap_values
 
 
 if __name__ == "__main__":
@@ -166,11 +177,9 @@ if __name__ == "__main__":
 
     dataset_train = [GenericDataset(input_train[i], output_train[i]) for i in range(n_train)]
     dataset_test = [GenericDataset(input_test[i], output_test[i]) for i in range(n_test)]
-    dataset_validate = [GenericDataset(input_validate[i], output_validate[i]) for i in range(n_validate)]
 
     dataloader_train = [DataLoader(dataset_train[i], batch_size=32, shuffle=True) for i in range(n_train)]
     dataloader_test = [DataLoader(dataset_test[i], batch_size=32, shuffle=False) for i in range(n_test)]
-    dataloader_validate = [DataLoader(dataset_validate[i], batch_size=32, shuffle=False) for i in range(n_validate)]
     for index, (x, y) in enumerate(dataloader_train[0]):
         print(f'{index}/{len(dataloader_train)}', end=' ')
         print('x shape: ', x.shape, end=' ')
@@ -259,7 +268,10 @@ if __name__ == "__main__":
     plt.rcParams['font.size'] = 15
 
     for i in range(n_validate):
-        y_real, y_pred, r2, rmse, error = validate(dataloader_validate[i], model, device)
+        y_real, y_pred, r2, rmse, error, shap_value = validate(
+            torch.tensor(input_validate[i], dtype=torch.float32),
+            torch.tensor(output_validate[i], dtype=torch.float32),
+            model, device, i == 0)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(f"{error * 100.0}%")
@@ -277,6 +289,49 @@ if __name__ == "__main__":
         ax.set_ylabel(f"Predicted {central_charge[-1].lower()}")
 
         plt.savefig(f"{save_dir}/spectrum_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
+
+        if shap_value is not None:
+            shap_value.feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
+                "Minimal gap",
+                "Maximal gap",
+                "Mean gap",
+                "Stdev gap",
+                "Median gap",
+                "1st quartile gap",
+                "3rd quartile gap",
+                "Number of relevant ops",
+                "Log of number of relevant ops",
+                "Mean dimension",
+                "Stdev dimension",
+                "Minimal dimension",
+                "Maximal dimension",
+                "Median dimension",
+                "1st quartile dimension",
+                "3rd quartile dimension"
+            ]
+            shap_value.values = shap_value.values.squeeze(2)
+            shap_value.data = shap_value.data.detach().cpu().numpy()
+            plt.close("all")
+
+            fig, ax = plt.subplots(figsize=(24, 16))
+            ax.set_title(f"SHAP values for central charge {central_charge[-1].lower()}")
+            shap.plots.beeswarm(shap_value, max_display=15, show=False, color_bar=True, ax=ax, group_remaining_features=True, plot_size=None)
+
+            plt.savefig(f"{save_dir}/spectrum_regression_nn_{central_charge[-1].lower()}_shap.png")
+
+            plt.close("all")
+
+            fig, ax = plt.subplots(figsize=(24, 16))
+            ax.set_title(f"Absolute average SHAP values for central charge {central_charge[-1].lower()}")
+            shap.plots.bar(shap_value, max_display=15, show=False, ax=ax)
+
+            plt.savefig(f"{save_dir}/spectrum_regression_nn_{central_charge[-1].lower()}_shap_abs_avg.png")
+
+            with open(f"{save_dir}/spectrum_regression_nn_{file_suffix}_shap.csv", 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Theory"] + shap_value.feature_names)
+                for i in range(len(shap_value.values)):
+                    writer.writerow([f"{i + 1}"] + shap_value.values[i].tolist())
 
     with open(f"{save_dir}/spectrum_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
         writer = csv.writer(f)
