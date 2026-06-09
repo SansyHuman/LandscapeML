@@ -38,7 +38,7 @@ def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.
         rows = sampled_data.df.collect()
 
         for row in rows:
-            data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_relevant_spectrum(grid, kde_bandwidth))
+            data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_sci(grid, kde_bandwidth))
 
         print(f"Data generation iteration {i + 1} completed.")
 
@@ -150,7 +150,7 @@ if __name__ == '__main__':
         accuracy[theories_dict[theory2]][theories_dict[theory1]] = mean_acc
         stdev[theories_dict[theory1]][theories_dict[theory2]] = stdev_acc
         stdev[theories_dict[theory2]][theories_dict[theory1]] = stdev_acc
-        print(f"Stats for {theory1} and {theory2} with relevant spectrum clustering")
+        print(f"Stats for {theory1} and {theory2} with sci clustering")
         print(f"    mean: {mean_acc}, stdev: {stdev_acc}")
 
     with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
@@ -159,13 +159,13 @@ if __name__ == '__main__':
     save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
-    with open(f"{save_dir}/spectrum_cluster_pairwise_acc.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/sci_cluster_pairwise_acc.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + accuracy[i])
 
-    with open(f"{save_dir}/spectrum_cluster_pairwise_stdev.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/sci_cluster_pairwise_stdev.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
@@ -188,5 +188,5 @@ if __name__ == '__main__':
     cmap_plot = ax[1].matshow(stdev, vmin=0.0, vmax=np.max(stdev), cmap='gray_r')
     fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
 
-    plt.savefig(f'{save_dir}/spectrum_cluster_pairwise.png')
+    plt.savefig(f'{save_dir}/sci_cluster_pairwise.png')
     plt.show()
