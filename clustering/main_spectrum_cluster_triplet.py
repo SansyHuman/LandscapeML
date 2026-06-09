@@ -188,7 +188,7 @@ if __name__ == '__main__':
     fig.suptitle(f"Accuracies of triplets iterations: {n_iter}")
 
     ax.set_title("Larger dot means lower accuracy")
-    scatter = ax.scatter(x, y, z, s=acc_scorers * 100, c=acc_values, vmin=1.0 / 3.0, vmax=1.0, cmap='gray', alpha=0.7)
+    scatter = ax.scatter(x, y, z, s=acc_scorers * 80 + 20, c=acc_values, vmin=1.0 / 3.0, vmax=1.0, cmap='plasma', alpha=0.7)
     fig.colorbar(scatter, ax=ax, shrink=0.7)
 
     plt.savefig(f"{save_dir}/spectrum_cluster_triplet.png")

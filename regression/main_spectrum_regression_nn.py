@@ -99,7 +99,7 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
 
     return test_loss, error, test_cnt
 
-def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device, calculate_shap):
+def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device, calculate_shap: bool):
     model.eval()
     y_real = None
     y_pred = None
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, optimizer, device, c=0.0001)
+            train(dataloader_train[i], model, criterion, optimizer, device, c=0.00001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")

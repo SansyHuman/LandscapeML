@@ -3,6 +3,7 @@ import sys
 import os
 import csv
 import numpy as np
+import shap
 import torch
 from sklearn.metrics import r2_score, root_mean_squared_error
 from torch.optim import Optimizer
@@ -98,7 +99,7 @@ def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: tor
 
     return test_loss, error, test_cnt
 
-def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device):
+def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device, calculate_shap: bool):
     model.eval()
     y_real = None
     y_pred = None
@@ -121,7 +122,14 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
     print(f"    RMSE: {rmse:.4f}")
     print(f"    Error: {error:.4f}")
 
-    return y_real, y_pred, r2, rmse, float(error)
+    shap_values = None
+
+    if calculate_shap:
+        print("Calculating SHAP values...")
+        explainer = shap.DeepExplainer(model, X)
+        shap_values = explainer(X)
+
+    return y_real, y_pred, r2, rmse, float(error), shap_values
 
 
 if __name__ == "__main__":
@@ -261,10 +269,10 @@ if __name__ == "__main__":
     plt.rcParams['font.size'] = 15
 
     for i in range(n_validate):
-        y_real, y_pred, r2, rmse, error = validate(
+        y_real, y_pred, r2, rmse, error, shap_value = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
-            model, device)
+            model, device, i == 0)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(f"{error * 100.0}%")
@@ -282,6 +290,49 @@ if __name__ == "__main__":
         ax.set_ylabel(f"Predicted {central_charge[-1].lower()}")
 
         plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
+
+        if shap_value is not None:
+            shap_value.feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
+                "Minimal gap",
+                "Maximal gap",
+                "Mean gap",
+                "Stdev gap",
+                "Median gap",
+                "1st quartile gap",
+                "3rd quartile gap",
+                "Sum of absolute coefficients",
+                "Log of sum of absolute coefficients",
+                "Mean dimension",
+                "Stdev dimension",
+                "Minimal dimension",
+                "Maximal dimension",
+                "Median dimension",
+                "1st quartile dimension",
+                "3rd quartile dimension"
+            ]
+            shap_value.values = shap_value.values.squeeze(2)
+            shap_value.data = shap_value.data.detach().cpu().numpy()
+            plt.close("all")
+
+            fig, ax = plt.subplots(figsize=(24, 16))
+            ax.set_title(f"SHAP values for central charge {central_charge[-1].lower()}")
+            shap.plots.beeswarm(shap_value, max_display=15, show=False, color_bar=True, ax=ax, group_remaining_features=True, plot_size=None)
+
+            plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_shap.png")
+
+            plt.close("all")
+
+            fig, ax = plt.subplots(figsize=(24, 16))
+            ax.set_title(f"Absolute average SHAP values for central charge {central_charge[-1].lower()}")
+            shap.plots.bar(shap_value, max_display=15, show=False, ax=ax)
+
+            plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_shap_abs_avg.png")
+
+            with open(f"{save_dir}/sci_regression_nn_{file_suffix}_shap.csv", 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Theory"] + shap_value.feature_names)
+                for i in range(len(shap_value.values)):
+                    writer.writerow([f"{i + 1}"] + shap_value.values[i].tolist())
 
     with open(f"{save_dir}/sci_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
         writer = csv.writer(f)
