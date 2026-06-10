@@ -23,23 +23,29 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
     output_train = []
     input_test = []
     output_test = []
+    id_validate = []
     input_validate = []
     output_validate = []
 
-    def build_dataset(data: TheorySampler, input_set, output_set):
+    def build_dataset(data: TheorySampler, input_set, output_set, id_set=None):
         rows = data.df.collect()
 
         input_data = []
         output_data = []
+        id_data = []
         for row in rows:
             input_data.append(SuperConformalIndex(row["SCI"]).featurize_relevant_spectrum(grid, kde_bandwidth))
             output_data.append([float(row[charge_col])])
+            if id_set is not None:
+                id_data.append(int(row["id"]))
 
         input_data = np.stack(input_data)
         output_data = np.stack(output_data)
 
         input_set.append(input_data)
         output_set.append(output_data)
+        if id_set is not None:
+            id_set.append(id_data)
 
     for i in range(n_train):
         build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
@@ -53,10 +59,10 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
 
     for i in range(n_validate):
         build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
-                      input_validate, output_validate)
+                      input_validate, output_validate, id_set=id_validate)
         print(f"Validation data {i + 1} built.")
 
-    return input_train, output_train, input_test, output_test, input_validate, output_validate
+    return input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate
 
 
 def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device, c: float=0.01):
@@ -113,7 +119,8 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
 
     r2 = r2_score(y_real, y_pred)
     rmse = root_mean_squared_error(y_real, y_pred)
-    error = np.sum(np.abs(y_real - y_pred) / y_real)
+    residual = y_real - y_pred
+    error = np.sum(np.abs(residual) / y_real)
     error /= len(y_real)
 
     print("Validation stats")
@@ -122,6 +129,9 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
     print(f"    RMSE: {rmse:.4f}")
     print(f"    Error: {error:.4f}")
 
+    stderr = np.std(residual)
+    outlier_mask = np.abs(residual) > 3 * stderr
+
     shap_values = None
 
     if calculate_shap:
@@ -129,7 +139,7 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
         explainer = shap.DeepExplainer(model, X)
         shap_values = explainer(X)
 
-    return y_real, y_pred, r2, rmse, float(error), shap_values
+    return y_real, y_pred, r2, rmse, float(error), shap_values, outlier_mask
 
 
 if __name__ == "__main__":
@@ -170,7 +180,7 @@ if __name__ == "__main__":
     n_test = int(input("Enter number of testing samples: "))
     n_validate = int(input("Enter number of validation samples: "))
 
-    input_train, output_train, input_test, output_test, input_validate, output_validate = build_data(
+    input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = build_data(
         theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
         n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
     )
@@ -209,7 +219,7 @@ if __name__ == "__main__":
     ).shape)
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
@@ -226,7 +236,7 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, optimizer, device, c=0.00001)
+            train(dataloader_train[i], model, criterion, optimizer, device, c=0.00002)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
@@ -260,6 +270,7 @@ if __name__ == "__main__":
     r2_scores = []
     rmse_scores = []
     errors = []
+    outliers = set()
     save_dir = f"../data/regression/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
@@ -268,13 +279,15 @@ if __name__ == "__main__":
     plt.rcParams['font.size'] = 15
 
     for i in range(n_validate):
-        y_real, y_pred, r2, rmse, error, shap_value = validate(
+        y_real, y_pred, r2, rmse, error, shap_value, outlier_mask = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
             model, device, i == 0)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(f"{error * 100.0}%")
+        ids = np.asarray(id_validate[i], dtype=int)
+        outliers.update(ids[outlier_mask].tolist())
 
         plt.close('all')
 
@@ -282,11 +295,13 @@ if __name__ == "__main__":
         fig.suptitle(f"Neural Network Regression of central charge {central_charge[-1].lower()}")
 
         ax.set_title(f"R2 = {r2:.3f}, RMSE = {rmse:.3f}")
-        ax.scatter(y_real, y_pred)
+        ax.scatter(y_real[~outlier_mask], y_pred[~outlier_mask], color='blue', label='Inliers')
+        ax.scatter(y_real[outlier_mask], y_pred[outlier_mask], color='red', label='Outliers')
         y_range = [np.min(y_real), np.max(y_real)]
-        ax.plot(y_range, y_range, linestyle='--', color='red')
+        ax.plot(y_range, y_range, linestyle='--', color='green')
         ax.set_xlabel(f"Real {central_charge[-1].lower()}")
         ax.set_ylabel(f"Predicted {central_charge[-1].lower()}")
+        ax.legend()
 
         plt.savefig(f"{save_dir}/spectrum_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
 
@@ -339,3 +354,6 @@ if __name__ == "__main__":
         writer.writerow(["R2"] + r2_scores)
         writer.writerow(["RMSE"] + rmse_scores)
         writer.writerow(["Error"] + errors)
+
+    with open(f"{save_dir}/spectrum_regression_nn_{file_suffix}_outliers.txt", "w") as f:
+        f.writelines([f"{i}\n" for i in outliers])
