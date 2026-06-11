@@ -1,4 +1,5 @@
 import datetime
+import random
 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -23,6 +24,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from common.sci_parser import SuperConformalIndex
+from clustering_common import cluster_pair, calculate_feature_importance
 
 
 def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
@@ -47,48 +49,6 @@ def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.
             data_per_theories[theory][i] = np.stack(data_per_theories[theory][i])
 
     return data_per_theories
-
-
-def cluster_pair(theory1_input: np.ndarray, theory2_input: np.ndarray):
-    data_num = theory1_input.shape[0]
-    X = np.vstack((theory1_input, theory2_input))
-    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
-
-    Xs = StandardScaler().fit_transform(X)
-
-    reduction_model = TSNE(
-        n_components=2,
-        perplexity=30,
-        init="pca",
-        random_state=42
-    )
-    X_tsne = reduction_model.fit_transform(Xs)
-
-    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
-    kmeans.fit(X_tsne)
-    y_pred = kmeans.labels_
-
-    acc_direct = np.mean(y_pred == y_true)
-    acc_flipped = np.mean(y_pred == (1 - y_true))
-
-    return max(acc_direct, acc_flipped)
-
-
-def cluster_pair_no_tsne(theory1_input: np.ndarray, theory2_input: np.ndarray):
-    data_num = theory1_input.shape[0]
-    X = np.vstack((theory1_input, theory2_input))
-    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
-
-    Xs = StandardScaler().fit_transform(X)
-
-    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
-    kmeans.fit(Xs)
-    y_pred = kmeans.labels_
-
-    acc_direct = np.mean(y_pred == y_true)
-    acc_flipped = np.mean(y_pred == (1 - y_true))
-
-    return max(acc_direct, acc_flipped)
 
 
 if __name__ == '__main__':
@@ -135,14 +95,24 @@ if __name__ == '__main__':
     pairs = [(theories[i], theories[j]) for i in range(n_theory) for j in range(i + 1, n_theory)]
     print(f"Number of pairs: {len(pairs)}")
 
+    feature_impact_scores = [None] * len(pairs)
+    pair_dict = dict(zip(pairs, [i for i in range(len(pairs))]))
+
     data_per_theory = build_data(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
 
     def pair_calculation(theory1: str, theory2: str):
         print(f"Calculating accuracy for {theory1} and {theory2}")
         acc = []
 
+        feature_impact_iter = random.randrange(0, n_iter)
         for i in range(n_iter):
-            acc.append(cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i]))
+            if i == feature_impact_iter:
+                acc_score, feature_impact = calculate_feature_importance(data_per_theory[theory1][i], data_per_theory[theory2][i])
+                acc.append(acc_score)
+                feature_impact_scores[pair_dict[(theory1, theory2)]] = feature_impact
+            else:
+                acc_score, _ = cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i])
+                acc.append(acc_score)
 
         mean_acc= float(np.mean(acc))
         stdev_acc = float(np.std(acc))
@@ -155,6 +125,27 @@ if __name__ == '__main__':
 
     with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
         executor.map(lambda arg: pair_calculation(*arg), pairs)
+
+    feature_impact_scores = np.stack(feature_impact_scores)
+    feature_impact_scores = np.mean(np.abs(feature_impact_scores), axis=0)
+    feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
+        "Minimal gap",
+        "Maximal gap",
+        "Mean gap",
+        "Stdev gap",
+        "Median gap",
+        "1st quartile gap",
+        "3rd quartile gap",
+        "Number of unique dimensions",
+        "Log of number of unique dimensions",
+        "Mean dimension",
+        "Stdev dimension",
+        "Minimal dimension",
+        "Maximal dimension",
+        "Median dimension",
+        "1st quartile dimension",
+        "3rd quartile dimension"
+    ]
 
     save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
@@ -170,6 +161,11 @@ if __name__ == '__main__':
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + stdev[i])
+
+    with open(f"{save_dir}/sci_exp_cluster_pairwise_impact.csv", 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Features"] + feature_names)
+        writer.writerow(["Scores"] + feature_impact_scores.tolist())
 
     plt.style.use('default')
     plt.rcParams['figure.figsize'] = (16, 12)

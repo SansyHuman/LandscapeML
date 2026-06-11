@@ -1,9 +1,9 @@
 import datetime
 
 from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -23,6 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from common.sci_parser import SuperConformalIndex
+from clustering_common import cluster_pair
 
 
 def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
@@ -47,48 +48,6 @@ def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.
             data_per_theories[theory][i] = np.stack(data_per_theories[theory][i])
 
     return data_per_theories
-
-
-def cluster_pair(theory1_input: np.ndarray, theory2_input: np.ndarray):
-    data_num = theory1_input.shape[0]
-    X = np.vstack((theory1_input, theory2_input))
-    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
-
-    Xs = StandardScaler().fit_transform(X)
-
-    reduction_model = TSNE(
-        n_components=2,
-        perplexity=30,
-        init="pca",
-        random_state=42
-    )
-    X_tsne = reduction_model.fit_transform(Xs)
-
-    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
-    kmeans.fit(X_tsne)
-    y_pred = kmeans.labels_
-
-    acc_direct = np.mean(y_pred == y_true)
-    acc_flipped = np.mean(y_pred == (1 - y_true))
-
-    return max(acc_direct, acc_flipped)
-
-
-def cluster_pair_no_tsne(theory1_input: np.ndarray, theory2_input: np.ndarray):
-    data_num = theory1_input.shape[0]
-    X = np.vstack((theory1_input, theory2_input))
-    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
-
-    Xs = StandardScaler().fit_transform(X)
-
-    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
-    kmeans.fit(Xs)
-    y_pred = kmeans.labels_
-
-    acc_direct = np.mean(y_pred == y_true)
-    acc_flipped = np.mean(y_pred == (1 - y_true))
-
-    return max(acc_direct, acc_flipped)
 
 
 if __name__ == '__main__':
@@ -142,7 +101,8 @@ if __name__ == '__main__':
         acc = []
 
         for i in range(n_iter):
-            acc.append(cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i]))
+            acc_score, sil_score = cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i])
+            acc.append(acc_score)
 
         mean_acc= float(np.mean(acc))
         stdev_acc = float(np.std(acc))
