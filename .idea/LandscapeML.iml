@@ -5,7 +5,7 @@
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/data" />
     </content>
-    <orderEntry type="jdk" jdkName="C:\Python\3.14t\python3.14t.exe" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="~/PycharmProjects/LandscapeML/.venv" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

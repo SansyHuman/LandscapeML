@@ -127,7 +127,8 @@ if __name__ == '__main__':
         executor.map(lambda arg: pair_calculation(*arg), pairs)
 
     feature_impact_scores = np.stack(feature_impact_scores)
-    feature_impact_scores = np.mean(np.abs(feature_impact_scores), axis=0)
+    feature_impact_absavg = np.mean(np.abs(feature_impact_scores), axis=0)
+    feature_impact_avg = np.mean(feature_impact_scores, axis=0)
     feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
         "Minimal gap",
         "Maximal gap",
@@ -165,7 +166,8 @@ if __name__ == '__main__':
     with open(f"{save_dir}/sci_exp_cluster_pairwise_impact.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Features"] + feature_names)
-        writer.writerow(["Scores"] + feature_impact_scores.tolist())
+        writer.writerow(["Absolute average score"] + feature_impact_absavg.tolist())
+        writer.writerow(["Average score"] + feature_impact_avg.tolist())
 
     plt.style.use('default')
     plt.rcParams['figure.figsize'] = (16, 12)
@@ -185,4 +187,41 @@ if __name__ == '__main__':
     fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
 
     plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise.png')
-    plt.show()
+
+    plt.close("all")
+
+    spectrum_absavg = feature_impact_absavg[:-16]
+    spectrum_avg = feature_impact_avg[:-16]
+
+    fig, ax = plt.subplots()
+    fig.suptitle("Spectral feature impact scores")
+
+    ax.plot(GRID, spectrum_absavg, "o-", color="red", label="Absolute average score")
+    ax.plot(GRID, spectrum_avg, "o-", color="blue", label="Average score")
+    ax.set_xlabel("Operator dimension")
+    ax.set_ylabel("Impact score")
+    ax.legend()
+    plt.grid(True)
+
+    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise_spectrum_impact.png')
+
+    plt.close("all")
+
+    stat_label = feature_names[-16:]
+    stat_absavg = feature_impact_absavg[-16:]
+    stat_avg = feature_impact_avg[-16:]
+
+    fig, ax = plt.subplots()
+    fig.suptitle("Stat feature impact scores")
+
+    x = np.arange(len(stat_label))
+    width = 0.35
+
+    ax.bar(x, stat_absavg, width, label="Absolute average score", color="red")
+    ax.bar(x + width, stat_avg, width, label="Average score", color="blue")
+    ax.set_xticks(x + width / 2, stat_label, rotation=90)
+    ax.set_ylabel("Absolute average SHAP value")
+    ax.legend(loc="upper left", ncols=2)
+    plt.tight_layout()
+
+    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise_stat_impact.png')
