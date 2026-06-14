@@ -2,6 +2,7 @@ from common.utils import *
 
 marginal = Monomial('t', 6)
 spectral = Monomial('y', 0)
+fermionic = Monomial('y', 1)
 
 
 class SuperConformalIndex:
@@ -25,16 +26,21 @@ class SuperConformalIndex:
         if len(marginal_term) > 0:
             self.num_dim3_minus_f = round(self.index.find_with(marginal)[0].coefficient)
 
-        # dimensions of operators in the order of increasing
+        # dimensions of scalar operators in the order of increasing
         self.dims: list[float] = []
-        # the operator's dimensions and coefficient of the sci terms
+        # the scalar operator's dimensions and coefficient of the sci terms
         self.spectrum: dict[float, int] = dict()
-        # dimensions of relevant operators in the order of increasing
+        # dimensions of relevant scalar operators in the order of increasing
         self.relevant_dims: list[float] = []
-        # the number of operators with each dimensions
+        # the number of relevant scalar operators with each dimensions
         self.relevant_spectrum: dict[float, int] = dict()
         # total number of relevant operators
         self.num_relevant_ops = 0
+
+        # dimensions of fermionic operators in the order of increasing
+        self.fermion_dims: list[float] = []
+        # the fermionic operator's dimensions and minus coefficient(since (-1)^F is -1) of the sci terms
+        self.fermion_spectrum: dict[float, int] = dict()
 
         terms_spectrum = self.index.find_with(spectral)
         tmp_dims = set()
@@ -67,6 +73,24 @@ class SuperConformalIndex:
         self.relevant_dims.sort()
         # smallest dimension among all operators
         self.smallest_dim = self.relevant_dims[0]
+
+        terms_fermionic = self.index.find_with(fermionic)
+        tmp_dims = set()
+        for term in terms_fermionic:
+            dim = term.exponent('t')
+            if dim is not None:
+                dim = dim / 2.0 # TODO: is j1 always zero?
+                cnt = -round(term.coefficient)
+
+                if dim in self.fermion_spectrum:
+                    self.fermion_spectrum[dim] += cnt
+                else:
+                    self.fermion_spectrum[dim] = cnt
+
+                tmp_dims.add(dim)
+
+        self.fermion_dims = list(tmp_dims)
+        self.fermion_dims.sort()
 
     def featurize_dimensions(self, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
         """
