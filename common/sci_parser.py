@@ -3,6 +3,7 @@ from common.utils import *
 marginal = Monomial('t', 6)
 spectral = Monomial('y', 0)
 fermionic = Monomial('y', 1)
+bosonic = Monomial('y', 2)
 
 
 class SuperConformalIndex:
@@ -41,6 +42,11 @@ class SuperConformalIndex:
         self.fermion_dims: list[float] = []
         # the fermionic operator's dimensions and minus coefficient(since (-1)^F is -1) of the sci terms
         self.fermion_spectrum: dict[float, int] = dict()
+
+        # dimensions of bosonic operators in the order of increasing
+        self.boson_dims: list[float] = []
+        # the bosonic operator's dimensions and coefficient of the sci terms
+        self.boson_spectrum: dict[float, int] = dict()
 
         terms_spectrum = self.index.find_with(spectral)
         tmp_dims = set()
@@ -91,6 +97,41 @@ class SuperConformalIndex:
 
         self.fermion_dims = list(tmp_dims)
         self.fermion_dims.sort()
+
+        terms_bosonic = self.index.find_with(bosonic)
+        tmp_dims = set()
+        for term in terms_bosonic:
+            dim = term.exponent('t')
+            if dim is not None:
+                dim = dim / 2.0
+                cnt = round(term.coefficient)
+
+                # For j2=1 adjoint rep, spin-0 operator is counted as scalar in spectral terms. Should be removed.
+                if dim in self.spectrum:
+                    self.spectrum[dim] -= cnt
+                    if self.spectrum[dim] == 0:
+                        del self.spectrum[dim]
+                        if dim in self.dims:
+                            self.dims.remove(dim)
+
+                if dim < 3.0: # relevant
+                    if dim in self.relevant_spectrum:
+                        self.relevant_spectrum[dim] -= cnt
+                        if self.relevant_spectrum[dim] == 0:
+                            del self.relevant_spectrum[dim]
+                            if dim in self.relevant_dims:
+                                self.relevant_dims.remove(dim)
+                        self.num_relevant_ops -= cnt
+
+                if dim in self.boson_spectrum:
+                    self.boson_spectrum[dim] += cnt
+                else:
+                    self.boson_spectrum[dim] = cnt
+
+                tmp_dims.add(dim)
+
+        self.boson_dims = list(tmp_dims)
+        self.boson_dims.sort()
 
     def featurize_dimensions(self, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
         """

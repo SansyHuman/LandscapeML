@@ -27,7 +27,7 @@ from common.sci_parser import SuperConformalIndex
 from clustering_common import cluster_pair, calculate_feature_importance
 
 
-def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
+def build_data_sci_exp(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
     data_per_theories = dict()
 
     stats = sampler.get_theory_stats()
@@ -41,6 +41,54 @@ def build_data(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.
 
         for row in rows:
             data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_dimensions(grid, kde_bandwidth))
+
+        print(f"Data generation iteration {i + 1} completed.")
+
+    for theory in theories:
+        for i in range(n_iter):
+            data_per_theories[theory][i] = np.stack(data_per_theories[theory][i])
+
+    return data_per_theories
+
+
+def build_data_spectrum(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
+    data_per_theories = dict()
+
+    stats = sampler.get_theory_stats()
+    theories = stats.select("Name").rdd.flatMap(lambda x: x).collect()
+    for theory in theories:
+        data_per_theories[theory] = [[] for _ in range(n_iter)]
+
+    for i in range(n_iter):
+        sampled_data = sampler.get_manual_sample(theories, n_per_theory)
+        rows = sampled_data.df.collect()
+
+        for row in rows:
+            data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_relevant_spectrum(grid, kde_bandwidth))
+
+        print(f"Data generation iteration {i + 1} completed.")
+
+    for theory in theories:
+        for i in range(n_iter):
+            data_per_theories[theory][i] = np.stack(data_per_theories[theory][i])
+
+    return data_per_theories
+
+
+def build_data_sci(sampler: TheorySampler, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
+    data_per_theories = dict()
+
+    stats = sampler.get_theory_stats()
+    theories = stats.select("Name").rdd.flatMap(lambda x: x).collect()
+    for theory in theories:
+        data_per_theories[theory] = [[] for _ in range(n_iter)]
+
+    for i in range(n_iter):
+        sampled_data = sampler.get_manual_sample(theories, n_per_theory)
+        rows = sampled_data.df.collect()
+
+        for row in rows:
+            data_per_theories[row["Name"]][i].append(SuperConformalIndex(row["SCI"]).featurize_sci(grid, kde_bandwidth))
 
         print(f"Data generation iteration {i + 1} completed.")
 
@@ -67,6 +115,27 @@ if __name__ == '__main__':
     stats = theory_sampler.get_theory_stats()
     for row in stats.collect():
         print(row.asDict())
+
+    print("Enter the program:")
+    print("1. SCI exponents with positive coefficients")
+    print("2. Relevant operator spectrum")
+    print("3. Full SCI")
+    program = int(input(">>"))
+
+    program_name = ""
+    number_of_ops_name = ""
+    if program == 1:
+        program_name = "sci_exp"
+        number_of_ops_name = "Number of unique dimensions"
+    elif program == 2:
+        program_name = "spectrum"
+        number_of_ops_name = "Number of relevant operators"
+    elif program == 3:
+        program_name = "sci"
+        number_of_ops_name = "Sum of absolute values of coefficients"
+    else:
+        print("Invalid program number")
+        exit(1)
 
     GRID_LO = float(input("Enter lower bound of feature grid: "))
     GRID_HI = float(input("Enter upper bound of feature grid: "))
@@ -98,7 +167,13 @@ if __name__ == '__main__':
     feature_impact_scores = [None] * len(pairs)
     pair_dict = dict(zip(pairs, [i for i in range(len(pairs))]))
 
-    data_per_theory = build_data(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+    data_per_theory = None
+    if program == 1:
+        data_per_theory = build_data_sci_exp(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+    elif program == 2:
+        data_per_theory = build_data_spectrum(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+    elif program == 3:
+        data_per_theory = build_data_sci(cutoff_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
 
     def pair_calculation(theory1: str, theory2: str):
         print(f"Calculating accuracy for {theory1} and {theory2}")
@@ -120,7 +195,7 @@ if __name__ == '__main__':
         accuracy[theories_dict[theory2]][theories_dict[theory1]] = mean_acc
         stdev[theories_dict[theory1]][theories_dict[theory2]] = stdev_acc
         stdev[theories_dict[theory2]][theories_dict[theory1]] = stdev_acc
-        print(f"Stats for {theory1} and {theory2} with exponent clustering")
+        print(f"Stats for {theory1} and {theory2} with {program_name} clustering")
         print(f"    mean: {mean_acc}, stdev: {stdev_acc}")
 
     with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
@@ -128,7 +203,6 @@ if __name__ == '__main__':
 
     feature_impact_scores = np.stack(feature_impact_scores)
     feature_impact_absavg = np.mean(np.abs(feature_impact_scores), axis=0)
-    feature_impact_avg = np.mean(feature_impact_scores, axis=0)
     feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
         "Minimal gap",
         "Maximal gap",
@@ -137,8 +211,8 @@ if __name__ == '__main__':
         "Median gap",
         "1st quartile gap",
         "3rd quartile gap",
-        "Number of unique dimensions",
-        "Log of number of unique dimensions",
+        number_of_ops_name,
+        f"Log of {number_of_ops_name}",
         "Mean dimension",
         "Stdev dimension",
         "Minimal dimension",
@@ -151,23 +225,22 @@ if __name__ == '__main__':
     save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
-    with open(f"{save_dir}/sci_exp_cluster_pairwise_acc.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/{program_name}_cluster_pairwise_acc.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + accuracy[i])
 
-    with open(f"{save_dir}/sci_exp_cluster_pairwise_stdev.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/{program_name}_cluster_pairwise_stdev.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + stdev[i])
 
-    with open(f"{save_dir}/sci_exp_cluster_pairwise_impact.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/{program_name}_cluster_pairwise_impact.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Features"] + feature_names)
         writer.writerow(["Absolute average score"] + feature_impact_absavg.tolist())
-        writer.writerow(["Average score"] + feature_impact_avg.tolist())
 
     plt.style.use('default')
     plt.rcParams['figure.figsize'] = (16, 12)
@@ -186,30 +259,44 @@ if __name__ == '__main__':
     cmap_plot = ax[1].matshow(stdev, vmin=0.0, vmax=np.max(stdev), cmap='gray_r')
     fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
 
-    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise.png')
+    plt.savefig(f'{save_dir}/{program_name}_cluster_pairwise.png')
+
+    plt.close("all")
+
+    feature_impact_order = np.argsort(-feature_impact_absavg)
+
+    fig, ax = plt.subplots()
+
+    top_feature_names = [feature_names[feature_impact_order[i]] for i in range(10)]
+    top_feature_impacts = feature_impact_absavg[feature_impact_order[:10]]
+
+    fig.suptitle("Top 10 feature impact scores")
+    bars = ax.barh(top_feature_names, top_feature_impacts, color="red")
+    ax.bar_label(bars, fmt="%.3f", padding=3)
+    ax.set_xlabel("Absolute average score")
+    plt.tight_layout()
+
+    plt.savefig(f"{save_dir}/{program_name}_cluster_pairwise_top_impacts.png")
 
     plt.close("all")
 
     spectrum_absavg = feature_impact_absavg[:-16]
-    spectrum_avg = feature_impact_avg[:-16]
 
     fig, ax = plt.subplots()
     fig.suptitle("Spectral feature impact scores")
 
     ax.plot(GRID, spectrum_absavg, "o-", color="red", label="Absolute average score")
-    ax.plot(GRID, spectrum_avg, "o-", color="blue", label="Average score")
     ax.set_xlabel("Operator dimension")
     ax.set_ylabel("Impact score")
     ax.legend()
     plt.grid(True)
 
-    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise_spectrum_impact.png')
+    plt.savefig(f'{save_dir}/{program_name}_cluster_pairwise_spectrum_impact.png')
 
     plt.close("all")
 
     stat_label = feature_names[-16:]
     stat_absavg = feature_impact_absavg[-16:]
-    stat_avg = feature_impact_avg[-16:]
 
     fig, ax = plt.subplots()
     fig.suptitle("Stat feature impact scores")
@@ -218,10 +305,9 @@ if __name__ == '__main__':
     width = 0.35
 
     ax.bar(x, stat_absavg, width, label="Absolute average score", color="red")
-    ax.bar(x + width, stat_avg, width, label="Average score", color="blue")
     ax.set_xticks(x + width / 2, stat_label, rotation=90)
     ax.set_ylabel("Absolute average SHAP value")
     ax.legend(loc="upper left", ncols=2)
     plt.tight_layout()
 
-    plt.savefig(f'{save_dir}/sci_exp_cluster_pairwise_stat_impact.png')
+    plt.savefig(f'{save_dir}/{program_name}_cluster_pairwise_stat_impact.png')

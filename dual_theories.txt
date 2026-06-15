@@ -1,0 +1,24 @@
+Seiberg
+SU2nf5, SU3nf5
+
+Kutasov
+SU3adj1nf2, SU5adj1nf2
+SU3adj1nf4, SU5adj1nf4
+
+Accidental
+SU2adj1nf1, SU2adj1nf2
+SU2adj1nf1, SU2adj2nf1
+SU2adj1nf1, Sp2s1a1nf2
+SU2adj1nf2, SU2adj2nf1
+SU2adj1nf2, Sp2s1a1nf2
+SU2adj2nf1, Sp2s1a1nf2
+SO7adj3nf0, Sp3adj3nf0
+SO7adj3nf0, Sp3s2a1nf0
+Sp3adj3nf0, Sp3s2a1nf0
+SU2adj1nf3, Sp2a3nf1
+SU3adj2nf1, Sp2s1a1nf1
+SU3adj1nf3, Sp2s1a1nf2
+SO9adj3nf0, Sp4adj3nf0
+Sp2adj1nf1, SU2adj1nf2
+G2adj1nf1, Sp2s1a2nf1
+SU3adj1nf2, Sp2s1a2nf1
