@@ -136,6 +136,16 @@ class TheorySampler:
 
         return sample
 
+    def get_selected_theories(self, theories: list[str]) -> Self:
+        sample = TheorySampler()
+        sample.filename = self.filename
+        sample.spark = self.spark
+
+        assert self.df is not None
+        sample.df = self.df.filter(F.col("Name").isin(theories))
+
+        return sample
+
     def get_balanced_bins_sample(self, charge_col: str, min_charge: float, max_charge: float, n_bins: int, n_per_bins: int) -> Self:
         sample = TheorySampler()
         sample.filename = self.filename
