@@ -5,8 +5,6 @@ import csv
 import numpy as np
 import shap
 import torch
-from sklearn.metrics import r2_score, root_mean_squared_error
-from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -14,11 +12,61 @@ import matplotlib.pyplot as plt
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
 from common.utils import GenericDataset, FullyConnectedNetwork
+from regression.regression_common import train, test, validate
 
 
-def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
+def build_data_spectrum(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
                n_bins: int, n_per_bins: int, n_train: int, n_test: int, n_validate: int,
                grid: np.ndarray, kde_bandwidth: float):
+    input_train = []
+    output_train = []
+    input_test = []
+    output_test = []
+    id_validate = []
+    input_validate = []
+    output_validate = []
+
+    def build_dataset(data: TheorySampler, input_set, output_set, id_set=None):
+        rows = data.df.collect()
+
+        input_data = []
+        output_data = []
+        id_data = []
+        for row in rows:
+            input_data.append(SuperConformalIndex(row["SCI"]).featurize_relevant_spectrum(grid, kde_bandwidth))
+            output_data.append([float(row[charge_col])])
+            if id_set is not None:
+                id_data.append(int(row["id"]))
+
+        input_data = np.stack(input_data)
+        output_data = np.stack(output_data)
+
+        input_set.append(input_data)
+        output_set.append(output_data)
+        if id_set is not None:
+            id_set.append(id_data)
+
+    for i in range(n_train):
+        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+                      input_train, output_train)
+        print(f"Train data {i + 1} built.")
+
+    for i in range(n_test):
+        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+                      input_test, output_test)
+        print(f"Test data {i + 1} built.")
+
+    for i in range(n_validate):
+        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+                      input_validate, output_validate, id_set=id_validate)
+        print(f"Validation data {i + 1} built.")
+
+    return input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate
+
+
+def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
+                   n_bins: int, n_per_bins: int, n_train: int, n_test: int, n_validate: int,
+                   grid: np.ndarray, kde_bandwidth: float):
     input_train = []
     output_train = []
     input_test = []
@@ -65,83 +113,6 @@ def build_data(sampler: TheorySampler, charge_col: str, min_charge: float, max_c
     return input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate
 
 
-def train(loader: DataLoader, model: nn.Module, criterion: nn.Module, optimizer: Optimizer, device: torch.device, c: float=0.01):
-    model.train()
-    for x, y in loader:
-        x = x.to(device)
-        y = y.to(device)
-
-        y_pred = model(x)
-        loss = criterion(y_pred, y)
-
-        l1_norm = sum(p.abs().sum() for p in model.parameters())
-        loss += c * l1_norm
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-def test(loader: DataLoader, model: nn.Module, criterion: nn.Module, device: torch.device):
-    model.eval()
-    test_loss = 0.0
-    error = 0.0
-    test_cnt = 0
-
-    with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device)
-            y = y.to(device)
-
-            y_pred = model(x)
-            loss = criterion(y_pred, y)
-
-            test_loss += loss.item() * x.size(0)
-
-            y_pred = y_pred.cpu().numpy()
-            y = y.cpu().numpy()
-            err = np.concatenate(np.abs((y_pred - y) / y))
-            error += np.sum(err)
-            test_cnt += len(err)
-
-    return test_loss, error, test_cnt
-
-def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.device, calculate_shap: bool):
-    model.eval()
-    y_real = None
-    y_pred = None
-
-    with torch.no_grad():
-        X = X.to(device)
-        y_real = y.cpu().numpy().ravel()
-
-        outputs = model(X)
-        y_pred = outputs.cpu().numpy().ravel()
-
-    r2 = r2_score(y_real, y_pred)
-    rmse = root_mean_squared_error(y_real, y_pred)
-    residual = y_real - y_pred
-    error = np.sum(np.abs(residual) / y_real)
-    error /= len(y_real)
-
-    print("Validation stats")
-    print("=======================")
-    print(f"    R2: {r2:.4f}")
-    print(f"    RMSE: {rmse:.4f}")
-    print(f"    Error: {error:.4f}")
-
-    stderr = np.std(residual)
-    outlier_mask = np.abs(residual) > 3 * stderr
-
-    shap_values = None
-
-    if calculate_shap:
-        print("Calculating SHAP values...")
-        explainer = shap.DeepExplainer(model, X)
-        shap_values = explainer(X)
-
-    return y_real, y_pred, r2, rmse, float(error), shap_values, outlier_mask
-
-
 if __name__ == "__main__":
     print(sys.version)
     print("GIL enabled:", sys._is_gil_enabled())
@@ -155,6 +126,23 @@ if __name__ == "__main__":
     stats = theory_sampler.get_theory_stats()
     for row in stats.collect():
         print(row.asDict())
+
+    print("Enter the program:")
+    print("1. Relevant operator spectrum")
+    print("2. Full SCI")
+    program = int(input(">>"))
+
+    program_name = ""
+    number_of_ops_name = ""
+    if program == 1:
+        program_name = "spectrum"
+        number_of_ops_name = "Number of relevant operators"
+    elif program == 2:
+        program_name = "sci"
+        number_of_ops_name = "Sum of absolute values of coefficients"
+    else:
+        print("Invalid program number.")
+        exit(1)
 
     GRID_LO = float(input("Enter lower bound of feature grid: "))
     GRID_HI = float(input("Enter upper bound of feature grid: "))
@@ -180,10 +168,17 @@ if __name__ == "__main__":
     n_test = int(input("Enter number of testing samples: "))
     n_validate = int(input("Enter number of validation samples: "))
 
-    input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = build_data(
-        theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
-        n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
-    )
+    input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = None, None, None, None, None, None, None
+    if program == 1:
+        input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = build_data_spectrum(
+            theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
+            n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
+        )
+    if program == 2:
+        input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = build_data_sci(
+            theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
+            n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
+        )
 
     dataset_train = [GenericDataset(input_train[i], output_train[i]) for i in range(n_train)]
     dataset_test = [GenericDataset(input_test[i], output_test[i]) for i in range(n_test)]
@@ -226,7 +221,7 @@ if __name__ == "__main__":
     n_epochs = int(input("Enter number of epochs: "))
     checkpoint_path = input("Enter the name of the checkpoint file: ")
 
-    file_suffix = f"{central_charge[-1].lower()}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
+    file_suffix = f"{central_charge[-1].lower()}_{min_charge}_{max_charge}_{GRID_HI}_{GRID_STEP}_{KDE_BANDWIDTH}"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
         checkpoint = torch.load(checkpoint_path)
@@ -283,7 +278,7 @@ if __name__ == "__main__":
         y_real, y_pred, r2, rmse, error, shap_value, outlier_mask = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
-            model, device, i == 0)
+            model, device, i == 0 and False)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(f"{error * 100.0}%")
@@ -304,7 +299,7 @@ if __name__ == "__main__":
         ax.set_ylabel(f"Predicted {central_charge[-1].lower()}")
         ax.legend()
 
-        plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_{i + 1}.png")
+        plt.savefig(f"{save_dir}/{program_name}_regression_nn_{central_charge[-1].lower()}_{min_charge}_{max_charge}_{i + 1}.png")
 
         if shap_value is not None:
             shap_value.feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))] + [
@@ -315,8 +310,8 @@ if __name__ == "__main__":
                 "Median gap",
                 "1st quartile gap",
                 "3rd quartile gap",
-                "Sum of absolute coefficients",
-                "Log of sum of absolute coefficients",
+                number_of_ops_name,
+                f"Log of {number_of_ops_name}",
                 "Mean dimension",
                 "Stdev dimension",
                 "Minimal dimension",
@@ -333,7 +328,7 @@ if __name__ == "__main__":
             ax.set_title(f"SHAP values for central charge {central_charge[-1].lower()}")
             shap.plots.beeswarm(shap_value, max_display=15, show=False, color_bar=True, ax=ax, group_remaining_features=True, plot_size=None)
 
-            plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_shap.png")
+            plt.savefig(f"{save_dir}/{program_name}_regression_nn_{central_charge[-1].lower()}_{min_charge}_{max_charge}_shap.png")
 
             plt.close("all")
 
@@ -341,20 +336,20 @@ if __name__ == "__main__":
             ax.set_title(f"Absolute average SHAP values for central charge {central_charge[-1].lower()}")
             shap.plots.bar(shap_value, max_display=15, show=False, ax=ax)
 
-            plt.savefig(f"{save_dir}/sci_regression_nn_{central_charge[-1].lower()}_shap_abs_avg.png")
+            plt.savefig(f"{save_dir}/{program_name}_regression_nn_{central_charge[-1].lower()}_{min_charge}_{max_charge}_shap_abs_avg.png")
 
-            with open(f"{save_dir}/sci_regression_nn_{file_suffix}_shap.csv", 'w', newline='') as f:
+            with open(f"{save_dir}/{program_name}_regression_nn_{file_suffix}_shap.csv", 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(["Theory"] + shap_value.feature_names)
                 for i in range(len(shap_value.values)):
                     writer.writerow([f"{i + 1}"] + shap_value.values[i].tolist())
 
-    with open(f"{save_dir}/sci_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
+    with open(f"{save_dir}/{program_name}_regression_nn_{file_suffix}.csv", 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(["Score"] + [i + 1 for i in range(n_validate)])
         writer.writerow(["R2"] + r2_scores)
         writer.writerow(["RMSE"] + rmse_scores)
         writer.writerow(["Error"] + errors)
 
-    with open(f"{save_dir}/spectrum_regression_nn_{file_suffix}_outliers.txt", "w") as f:
+    with open(f"{save_dir}/{program_name}_regression_nn_{file_suffix}_outliers.txt", "w") as f:
         f.writelines([f"{i}\n" for i in outliers])
