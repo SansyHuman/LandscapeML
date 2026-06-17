@@ -104,10 +104,12 @@ if __name__ == '__main__':
     GRID = np.arange(GRID_LO, GRID_HI + GRID_STEP, GRID_STEP)
     KDE_BANDWIDTH = float(input("Enter bandwidth of feature grid: "))
 
+    min_count = int(input("Enter the minimum number of fixed points of theories to choose: "))
     n_sample = int(input("Enter the number of samples from each theories: "))
     n_iter = int(input("Enter the number of iterations for each pairs: "))
 
-    theories = stats.select("Name").rdd.flatMap(lambda x: x).collect()
+    dual_sampler = dual_sampler.get_theories_above_count(min_count)
+    theories = dual_sampler.get_theory_stats().select("Name").rdd.flatMap(lambda x: x).collect()
     n_theory = len(theories)
     print(f"Selected theories: {n_theory}")
     print(theories)
