@@ -1,6 +1,7 @@
 from clustering.main_sci_exp_cluster_pairwise import build_data_sci, build_data_sci_exp, build_data_spectrum
+from clustering.clustering_common import cluster_pair
 import datetime
-import random
+import matplotlib.pyplot as plt
 from common.balanced_sample_tool import TheorySampler
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
@@ -29,8 +30,8 @@ if __name__ == '__main__':
         print(row.asDict())
     print()
 
-    seiberg_pair = []
-    kutasov_pair = []
+    seiberg_pair = set()
+    kutasov_pair = set()
     dual_theories = set()
 
     mode = "None"
@@ -60,9 +61,11 @@ if __name__ == '__main__':
             theory1 = theory_pair[0].strip()
             theory2 = theory_pair[1].strip()
             if mode == "Seiberg":
-                seiberg_pair.append((theory1, theory2))
+                seiberg_pair.add((theory1, theory2))
+                seiberg_pair.add((theory2, theory1))
             elif mode == "Kutasov":
-                kutasov_pair.append((theory1, theory2))
+                kutasov_pair.add((theory1, theory2))
+                kutasov_pair.add((theory2, theory1))
 
             dual_theories.add(theory1)
             dual_theories.add(theory2)
@@ -126,3 +129,92 @@ if __name__ == '__main__':
         data_per_theory = build_data_spectrum(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
     elif program == 3:
         data_per_theory = build_data_sci(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+
+    def pair_calculation(theory1: str, theory2: str):
+        print(f"Calculating accuracy for {theory1} and {theory2}")
+        acc = []
+
+        for i in range(n_iter):
+            acc_score, _ = cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i])
+            acc.append(acc_score)
+
+        mean_acc= float(np.mean(acc))
+        stdev_acc = float(np.std(acc))
+        accuracy[theories_dict[theory1]][theories_dict[theory2]] = mean_acc
+        accuracy[theories_dict[theory2]][theories_dict[theory1]] = mean_acc
+        stdev[theories_dict[theory1]][theories_dict[theory2]] = stdev_acc
+        stdev[theories_dict[theory2]][theories_dict[theory1]] = stdev_acc
+        print(f"Stats for {theory1} and {theory2} with {program_name} clustering")
+        print(f"    mean: {mean_acc}, stdev: {stdev_acc}")
+
+    with ThreadPoolExecutor(max_workers=mp.cpu_count()) as executor:
+        executor.map(lambda arg: pair_calculation(*arg), pairs)
+
+    save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    with open(f"{save_dir}/{program_name}_dual_cluster_acc.csv", 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Theories"] + theories)
+        for i in range(n_theory):
+            writer.writerow([theories[i]] + accuracy[i])
+
+    with open(f"{save_dir}/{program_name}_dual_cluster_stdev.csv", 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Theories"] + theories)
+        for i in range(n_theory):
+            writer.writerow([theories[i]] + stdev[i])
+
+    plt.style.use('default')
+    plt.rcParams['figure.figsize'] = (16, 12)
+    plt.rcParams['font.size'] = 12
+
+    fig, ax = plt.subplots(nrows=1, ncols=2, squeeze=True)
+    fig.suptitle("Pairwise clustering accuracies and stdevs")
+
+    vmin, vmax = 0.5, 1.0
+
+    ax[0].set_title("Accuracies")
+    cmap_plot = ax[0].matshow(accuracy, vmin=vmin, vmax=vmax, cmap='gray')
+    fig.colorbar(cmap_plot, ax=ax[0], shrink=0.7)
+
+    ax[1].set_title(f"Stdevs iteration: {n_iter}")
+    cmap_plot = ax[1].matshow(stdev, vmin=0.0, vmax=np.max(stdev), cmap='gray_r')
+    fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
+
+    plt.savefig(f'{save_dir}/{program_name}_dual_cluster.png')
+
+    plt.close("all")
+
+    pair_accuracy = [accuracy[i][j] for i in range(n_theory) for j in range(i + 1, n_theory)]
+    acc_order = np.argsort(pair_accuracy).tolist()
+
+    pairs_sorted = [pairs[acc_order[i]] for i in range(len(acc_order))]
+    pair_acc_sorted = [pair_accuracy[acc_order[i]] for i in range(len(acc_order))]
+
+    x_nondual = []
+    x_seiberg = []
+    x_kutasov = []
+    for i in range(len(acc_order)):
+        if pairs_sorted[i] in seiberg_pair:
+            x_seiberg.append(i)
+        elif pairs_sorted[i] in kutasov_pair:
+            x_kutasov.append(i)
+        else:
+            x_nondual.append(i)
+
+    pair_acc_sorted = np.asarray(pair_acc_sorted)
+    x_nondual = np.asarray(x_nondual)
+    x_seiberg = np.asarray(x_seiberg)
+    x_kutasov = np.asarray(x_kutasov)
+
+    fig, ax = plt.subplots()
+    fig.suptitle("Accuracies of each pair")
+    ax.bar(x_nondual, pair_acc_sorted[x_nondual], color='gray', label="Non-dual")
+    ax.bar(x_seiberg, pair_acc_sorted[x_seiberg], color='blue', label="Seiberg")
+    ax.bar(x_kutasov, pair_acc_sorted[x_kutasov], color='red', label="Kutasov")
+    ax.set_xlabel("Pairs")
+    ax.set_ylabel("Accuracy")
+    ax.legend()
+
+    plt.savefig(f'{save_dir}/{program_name}_dual_cluster_pair_acc.png')
