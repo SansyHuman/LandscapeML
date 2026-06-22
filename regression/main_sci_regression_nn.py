@@ -281,7 +281,7 @@ if __name__ == "__main__":
             model, device, i == 0 and False)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
-        errors.append(f"{error * 100.0}%")
+        errors.append(error * 100.0)
         ids = np.asarray(id_validate[i], dtype=int)
         outliers.update(ids[outlier_mask].tolist())
 
@@ -349,7 +349,7 @@ if __name__ == "__main__":
         writer.writerow(["Score"] + [i + 1 for i in range(n_validate)])
         writer.writerow(["R2"] + r2_scores)
         writer.writerow(["RMSE"] + rmse_scores)
-        writer.writerow(["Error"] + errors)
+        writer.writerow(["Error (%)"] + errors)
 
     with open(f"{save_dir}/{program_name}_regression_nn_{file_suffix}_outliers.txt", "w") as f:
         f.writelines([f"{i}\n" for i in outliers])
