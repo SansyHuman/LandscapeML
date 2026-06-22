@@ -63,8 +63,8 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
 
     r2 = r2_score(y_real, y_pred)
     rmse = root_mean_squared_error(y_real, y_pred)
-    residual = y_real - y_pred
-    error = np.sum(np.abs(residual) / y_real)
+    rel_residual = (y_real - y_pred) / y_real
+    error = np.sum(np.abs(rel_residual))
     error /= len(y_real)
 
     print("Validation stats")
@@ -73,8 +73,8 @@ def validate(X: torch.Tensor, y: torch.Tensor, model: nn.Module, device: torch.d
     print(f"    RMSE: {rmse:.4f}")
     print(f"    Error: {error:.4f}")
 
-    stderr = np.std(residual)
-    outlier_mask = np.abs(residual) > 3 * stderr
+    stdrerr = np.std(rel_residual)
+    outlier_mask = np.abs(rel_residual) > 3 * stdrerr
 
     shap_values = None
 

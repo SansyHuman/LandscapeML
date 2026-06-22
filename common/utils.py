@@ -561,3 +561,27 @@ def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth:
         kde /= kde.sum() * grid_step + 1e-12
 
     return kde
+
+
+class MRSELoss(nn.Module):
+    """
+    Mean relative squared error loss.
+    """
+    def __init__(self, multiplier: float = 1.0, eps: float=1e-8):
+        """
+        Mean relative squared error loss.
+        :param multiplier: multiplier for the loss
+        :param eps: epsilon value to avoid division by zero
+        """
+        super(MRSELoss, self).__init__()
+        self.multiplier = multiplier
+        self.eps = eps
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        """
+        Calculate mean relative squared error loss.
+        :param pred: predicted values
+        :param target: target values
+        :return: mean relative squared error loss
+        """
+        return self.multiplier * torch.mean(((pred - target) / (target + self.eps)) ** 2)

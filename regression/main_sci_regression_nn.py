@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
-from common.utils import GenericDataset, FullyConnectedNetwork
+from common.utils import GenericDataset, FullyConnectedNetwork, MRSELoss
 from regression.regression_common import train, test, validate
 
 
@@ -214,8 +214,8 @@ if __name__ == "__main__":
         torch.randn(32, input_num).to(device)
     ).shape)
 
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    criterion = MRSELoss(multiplier=max_charge)
+    optimizer = torch.optim.Adam(model.parameters(), lr=2e-4)
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
