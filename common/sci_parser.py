@@ -1,5 +1,10 @@
 from common.utils import *
 
+import networkx as nx
+from torch_geometric.data import Data
+from torch_geometric.utils import from_networkx
+import numpy as np
+
 marginal = Monomial('t', 6)
 spectral = Monomial('y', 0)
 fermionic = Monomial('y', 1)
@@ -272,3 +277,25 @@ class SuperConformalIndex:
         ]
 
         return np.concatenate([kde, gap_feat, summary])
+
+    def featurize_sci_graph(self, min_dim: float, max_dim: float) -> Data:
+        dims_sorted = []
+        for dim in self.spectrum.keys():
+            if min_dim <= dim <= max_dim:
+                dims_sorted.append(dim)
+        dims_sorted.sort()
+
+        graph = nx.Graph()
+        graph.add_nodes_from(
+            [
+                (dim, {"dim": dim, "coeff": self.spectrum[dim]}) for dim in dims_sorted
+            ]
+        )
+        for i in range(len(dims_sorted) - 1):
+            graph.add_edge(dims_sorted[i], dims_sorted[i + 1], delta=dims_sorted[i + 1] - dims_sorted[i])
+
+        return from_networkx(
+            graph,
+            group_node_attrs=["dim", "coeff"],
+            group_edge_attrs=["delta"]
+        )
