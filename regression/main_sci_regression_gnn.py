@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
 from common.utils import GenericDataset, FullyConnectedNetwork, MRSELoss
-from regression.regression_common import train, test, validate
 
 
 def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
@@ -53,13 +52,6 @@ def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, m
         print(f"Validation data {i + 1} built.")
 
     return data_train, data_test, data_validate
-
-
-class GraphChargeRegressionModel(nn.Module):
-    def __init__(self, node_features: int, edge_features: int,):
-        super(GraphChargeRegressionModel, self).__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, out_channels)
 
 
 if __name__ == "__main__":
