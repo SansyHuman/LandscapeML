@@ -585,3 +585,31 @@ class MRSELoss(nn.Module):
         :return: mean relative squared error loss
         """
         return self.multiplier * torch.mean(((pred - target) / (target + self.eps)) ** 2)
+
+
+class CorrelationLoss(nn.Module):
+    """
+    Correlation loss, which is 1 - correlation
+    """
+    def __init__(self, eps: float=1e-12):
+        """
+        Correlation loss.
+        :param eps: epsilon value to avoid division by zero
+        """
+        super(CorrelationLoss, self).__init__()
+        self.eps = eps
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        pred = pred.view(pred.size(0), -1)
+        target = target.view(target.size(0), -1)
+
+        pred_c = pred - pred.mean(dim=1, keepdim=True)
+        target_c = target - target.mean(dim=1, keepdim=True)
+
+        numerator = (target_c * pred_c).sum(dim=1)
+        denominator = torch.sqrt(
+            (target_c * target_c).sum(dim=1) * (pred_c * pred_c).sum(dim=1)
+        ) + self.eps
+
+        corr = numerator / denominator
+        return 1 - corr.mean()

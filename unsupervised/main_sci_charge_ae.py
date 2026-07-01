@@ -11,7 +11,7 @@ import csv
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
-from common.utils import FullyConnectedNetwork, GenericDataset
+from common.utils import FullyConnectedNetwork, GenericDataset, CorrelationLoss
 
 
 def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
@@ -117,6 +117,29 @@ class SCIAutoencoder(nn.Module):
         return charges
 
 
+class AEReconLoss(nn.Module):
+    def __init__(self, kde_delta: float=1.0, kde_value_weight: float=1.0, stat_weight: float=1.0):
+        super(AEReconLoss, self).__init__()
+        self.kde_shape_criterion = CorrelationLoss()
+        self.kde_value_criterion = nn.MSELoss()
+        self.stat_criterion = nn.MSELoss()
+
+        self.kde_value_weight = kde_value_weight
+        self.stat_weight = stat_weight
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        pred_kde = pred[:, :-16]
+        pred_stat = pred[:, -16:]
+        target_kde = target[:, :-16]
+        target_stat = target[:, -16:]
+
+        loss_kde_shape = self.kde_shape_criterion(pred_kde, target_kde)
+        loss_kde_value = self.kde_value_criterion(pred_kde, target_kde)
+        loss_stat = self.stat_criterion(pred_stat, target_stat)
+
+        return loss_kde_shape + self.kde_value_weight * loss_kde_value + self.stat_weight * loss_stat
+
+
 def train(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
           optimizer: Optimizer, device: torch.device,
           loss_charge_weight: float = 0.1, c: float=0.01):
@@ -149,6 +172,7 @@ def test(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, ch
          device: torch.device, loss_charge_weight: float = 0.1):
     model.eval()
     test_loss = 0.0
+    recon_corr = 0.0
     recon_error = 0.0
     charge_error = 0.0
     test_cnt = 0
@@ -170,20 +194,29 @@ def test(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, ch
             test_loss += loss.item() * x.size(0)
             test_cnt += x.size(0)
 
-            x_recon = x_recon.cpu().numpy()
-            charge_pred = charge_pred.cpu().numpy()
-            x = x.cpu().numpy()
-            charge = charge.cpu().numpy()
+            x_kde = x[:, :-16]
+            x_recon_kde = x_recon[:, :-16]
+            x_stat = x[:, -16:]
+            x_recon_stat = x_recon[:, -16:]
 
-            err = np.concatenate(np.abs((x_recon - x) / (x + 1e-12)))
-            recon_error += np.sum(err)
-            recon_cnt += len(err)
+            corr = CorrelationLoss()
+
+            recon_corr += (1 - corr(x_recon_kde, x_kde).item()) * x.size(0)
+            recon_cnt += x.size(0)
+
+            x_stat = x_stat.cpu().numpy()
+            x_recon_stat = x_recon_stat.cpu().numpy()
+            err = np.concatenate(np.abs((x_recon_stat - x_stat) / (x_stat + 1e-12)))
+            recon_error += np.sum(err) / 16
+
+            charge_pred = charge_pred.cpu().numpy()
+            charge = charge.cpu().numpy()
 
             err = np.concatenate(np.abs((charge_pred - charge) / charge))
             charge_error += np.sum(err)
             charge_cnt += len(err)
 
-    return test_loss, recon_error, charge_error, test_cnt, recon_cnt, charge_cnt
+    return test_loss, recon_corr, recon_error, charge_error, test_cnt, recon_cnt, charge_cnt
 
 
 if __name__ == "__main__":
@@ -246,8 +279,9 @@ if __name__ == "__main__":
     input_num = input_train[0].shape[1]
     model = SCIAutoencoder(input_num, 16).to(device)
 
-    criterion = nn.HuberLoss(delta=1.0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    recon_criterion = AEReconLoss(kde_delta=3.0, kde_value_weight=0.1, stat_weight=0.1)
+    charge_criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-5)
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
@@ -264,12 +298,13 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, criterion, optimizer, device,
-                  loss_charge_weight=0.5, c=0)
+            train(dataloader_train[i], model, recon_criterion, charge_criterion, optimizer, device,
+                  loss_charge_weight=1.0, c=0.00001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
         total_loss = 0.0
+        total_recon_corr = 0.0
         total_recon_error = 0.0
         total_charge_error = 0.0
         total_cnt = 0
@@ -277,11 +312,12 @@ if __name__ == "__main__":
         total_charge_cnt = 0
 
         for i in range(n_test):
-            loss, recon_error, charge_error, cnt, recon_cnt, charge_cnt = test(
-                dataloader_test[i], model, criterion, criterion, device,
-                loss_charge_weight=0.5
+            loss, recon_corr, recon_error, charge_error, cnt, recon_cnt, charge_cnt = test(
+                dataloader_test[i], model, recon_criterion, charge_criterion, device,
+                loss_charge_weight=1.0
             )
             total_loss += loss
+            total_recon_corr += recon_corr
             total_recon_error += recon_error
             total_charge_error += charge_error
             total_cnt += cnt
@@ -290,10 +326,11 @@ if __name__ == "__main__":
             print(f"Test set {i + 1}/{n_test} complete.")
 
         total_loss /= total_cnt
+        total_recon_corr /= total_cnt
         total_recon_error /= total_recon_cnt
         total_charge_error /= total_charge_cnt
         print(f"Epoch {epoch + 1}/{n_epochs} test loss: {total_loss}")
-        print(f"reconstruction error: {total_recon_error * 100:.2f} % charge error: {total_charge_error * 100:.2f} %")
+        print(f"reconstruction kde correlation: {total_recon_corr:.4f} reconstruction stat error: {total_recon_error * 100:.2f} % charge error: {total_charge_error * 100:.2f} %")
         if total_loss < best_loss:
             best_loss = total_loss
             print('New best loss obtained. Saving model...')
