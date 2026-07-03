@@ -123,6 +123,83 @@ class SCIAutoencoder(nn.Module):
         return charges
 
 
+class SCIVariationalAutoencoder(nn.Module):
+    def __init__(self, input_dim: int, latent_dim: int):
+        super(SCIVariationalAutoencoder, self).__init__()
+
+        self.encoder = FullyConnectedNetwork(
+            input_dim, input_dim // 8,
+            (input_dim, nn.GELU()),
+            (input_dim // 2, nn.GELU()),
+            (input_dim // 2, nn.GELU()),
+            (input_dim // 3, nn.GELU()),
+            (input_dim // 3, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 8, nn.GELU())
+        )
+        self.fc_elu = nn.GELU()
+        self.fc_mu = nn.Linear(input_dim // 8, latent_dim)
+        self.fc_logvar = nn.Linear(input_dim // 8, latent_dim)
+
+        self.regressor = nn.Linear(latent_dim, 2)
+
+        self.decoder = FullyConnectedNetwork(
+            latent_dim, input_dim,
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 8, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 6, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 4, nn.GELU()),
+            (input_dim // 3, nn.GELU()),
+            (input_dim // 3, nn.GELU()),
+            (input_dim // 2, nn.GELU()),
+            (input_dim // 2, nn.GELU()),
+            (input_dim, nn.GELU()),
+        )
+
+    def encode(self, x: torch.Tensor):
+        h = self.fc_elu(self.encoder(x))
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
+
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: torch.Tensor):
+        return self.decoder(z)
+
+    def forward_internal(self, x: torch.Tensor):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        x_recon = self.decoder(z)
+        charges = self.regressor(z)
+        return x_recon, charges, mu, logvar
+
+    # For SHAP value calculation
+    def forward(self, x: torch.Tensor):
+        x_recon, charges, mu, logvar = self.forward_internal(x)
+        return charges
+
+
 class AEReconLoss(nn.Module):
     def __init__(self, kde_shape_weight: float=1.0):
         super(AEReconLoss, self).__init__()
@@ -139,9 +216,9 @@ class AEReconLoss(nn.Module):
         return self.kde_shape_weight * loss_kde_shape + loss_kde_value
 
 
-def train(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
-          optimizer: Optimizer, device: torch.device,
-          loss_charge_weight: float = 0.1, c: float=0.01):
+def train_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
+             optimizer: Optimizer, device: torch.device,
+             loss_charge_weight: float = 0.1, c: float=0.01):
     model.train()
 
     total_loss = 0
@@ -167,8 +244,38 @@ def train(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, c
 
     print(f"Train loss: {total_loss / train_cnt:.4f}")
 
-def test(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
-         device: torch.device, loss_charge_weight: float = 0.1):
+
+def train_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
+             optimizer: Optimizer, device: torch.device,
+             loss_charge_weight: float = 0.1, c: float=0.01):
+    model.train()
+
+    total_loss = 0
+    train_cnt = 0
+    for x, charge in loader:
+        x = x.to(device)
+        charge = charge.to(device)
+
+        x_recon, charge_pred, _, _ = model.forward_internal(x)
+
+        loss_recon = recon_loss_fn(x_recon, x)
+        loss_charge = charge_loss_fn(charge_pred, charge)
+        l1_norm = sum(p.abs().sum() for p in model.parameters())
+
+        loss = loss_recon + loss_charge_weight * loss_charge + c * l1_norm
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * x.size(0)
+        train_cnt += x.size(0)
+
+    print(f"Train loss: {total_loss / train_cnt:.4f}")
+
+
+def test_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
+            device: torch.device, loss_charge_weight: float = 0.1):
     model.eval()
     test_loss = 0.0
     recon_corr = 0.0
@@ -183,6 +290,46 @@ def test(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module, ch
             charge = charge.to(device)
 
             x_recon, charge_pred, _ = model.forward_internal(x)
+
+            loss_recon = recon_loss_fn(x_recon, x)
+            loss_charge = charge_loss_fn(charge_pred, charge)
+
+            loss = loss_recon + loss_charge_weight * loss_charge
+
+            test_loss += loss.item() * x.size(0)
+            test_cnt += x.size(0)
+
+            corr = CorrelationLoss()
+
+            recon_corr += (1 - corr(x_recon, x).item()) * x.size(0)
+            recon_cnt += x.size(0)
+
+            charge_pred = charge_pred.cpu().numpy()
+            charge = charge.cpu().numpy()
+
+            err = np.concatenate(np.abs((charge_pred - charge) / charge))
+            charge_error += np.sum(err)
+            charge_cnt += len(err)
+
+    return test_loss, recon_corr, charge_error, test_cnt, recon_cnt, charge_cnt
+
+
+def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
+            device: torch.device, loss_charge_weight: float = 0.1):
+    model.eval()
+    test_loss = 0.0
+    recon_corr = 0.0
+    charge_error = 0.0
+    test_cnt = 0
+    recon_cnt = 0
+    charge_cnt = 0
+
+    with torch.no_grad():
+        for x, charge in loader:
+            x = x.to(device)
+            charge = charge.to(device)
+
+            x_recon, charge_pred, _, _ = model.forward_internal(x)
 
             loss_recon = recon_loss_fn(x_recon, x)
             loss_charge = charge_loss_fn(charge_pred, charge)
@@ -265,7 +412,23 @@ if __name__ == "__main__":
     print(f"Device: {device}")
 
     input_num = input_train[0].shape[1]
-    model = SCIAutoencoder(input_num, 10).to(device)
+    model = None
+
+    train = None
+    test = None
+
+    model_name = int(input("Enter which model to use; 1. autoencoder, 2. variational autoencoder\n>>>"))
+    if model_name == 1:
+        model = SCIAutoencoder(input_num, 10).to(device)
+        train = train_ae
+        test = test_ae
+    elif model_name == 2:
+        model = SCIVariationalAutoencoder(input_num, 10).to(device)
+        train = train_vae
+        test = test_vae
+    else:
+        print("Invalid model")
+        exit(-1)
 
     recon_criterion = AEReconLoss(kde_shape_weight=50.0)
     charge_criterion = nn.MSELoss()
@@ -287,7 +450,7 @@ if __name__ == "__main__":
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
             train(dataloader_train[i], model, recon_criterion, charge_criterion, optimizer, device,
-                  loss_charge_weight=5.0, c=0.00001)
+                     loss_charge_weight=5.0, c=0.00001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
