@@ -1,7 +1,11 @@
+import datetime
+import random
+
 from sklearn.metrics import r2_score, root_mean_squared_error
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 import torch.nn as nn
+import matplotlib.pyplot as plt
 import shap
 import torch
 import numpy as np
@@ -256,7 +260,7 @@ def test_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module,
             corr = CorrelationLoss()
 
             recon_corr += (1 - corr(x_recon, x).item()) * x.size(0)
-            recon_mse = torch.mean((x_recon - x) ** 2).item() * x.size(0)
+            recon_mse += torch.mean((x_recon - x) ** 2).item() * x.size(0)
             recon_cnt += x.size(0)
 
             charge_pred = charge_pred.cpu().numpy()
@@ -298,7 +302,7 @@ def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn
             corr = CorrelationLoss()
 
             recon_corr += (1 - corr(x_recon, x).item()) * x.size(0)
-            recon_mse = torch.mean((x_recon - x) ** 2).item() * x.size(0)
+            recon_mse += torch.mean((x_recon - x) ** 2).item() * x.size(0)
             recon_cnt += x.size(0)
 
             charge_pred = charge_pred.cpu().numpy()
@@ -309,6 +313,134 @@ def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn
             charge_cnt += len(err)
 
     return test_loss, recon_corr, recon_mse, charge_error, test_cnt, recon_cnt, charge_cnt
+
+
+class AEValidationData():
+    def __init__(self, a_real: np.ndarray, a_pred: np.ndarray,
+                 c_real: np.ndarray, c_pred: np.ndarray,
+                 x: np.ndarray, x_recon: np.ndarray,
+                 r2_a: float, r2_c: float,
+                 rmse_a: float, rmse_c: float,
+                 error_a: float, error_c: float,
+                 recon_corr: float, recon_rmse: float):
+        self.a_real = a_real
+        self.a_pred = a_pred
+        self.c_real = c_real
+        self.c_pred = c_pred
+        self.x = x
+        self.x_recon = x_recon
+        self.r2_a = r2_a
+        self.r2_c = r2_c
+        self.rmse_a = rmse_a
+        self.rmse_c = rmse_c
+        self.error_a = error_a
+        self.error_c = error_c
+        self.recon_corr = recon_corr
+        self.recon_rmse = recon_rmse
+
+
+def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device):
+    model.eval()
+    charge_real = None
+    charge_pred = None
+
+    with torch.no_grad():
+        x = x.to(device)
+        charge_real = charge.cpu().numpy()
+
+        x_recon, charge_pred, _ = model.forward_internal(x)
+        charge_pred = charge_pred.cpu().numpy()
+
+    a_real = charge_real[:, 0].ravel()
+    a_pred = charge_pred[:, 0].ravel()
+
+    c_real = charge_real[:, 1].ravel()
+    c_pred = charge_pred[:, 1].ravel()
+
+    r2_a = r2_score(a_real, a_pred)
+    r2_c = r2_score(c_real, c_pred)
+
+    rmse_a = root_mean_squared_error(a_real, a_pred)
+    rmse_c = root_mean_squared_error(c_real, c_pred)
+
+    error_a = float(np.sum(np.abs((a_real - a_pred) / a_real)) / len(a_real))
+    error_c = float(np.sum(np.abs((c_real - c_pred) / c_real)) / len(c_real))
+
+    corr = CorrelationLoss()
+
+    recon_corr = (1 - corr(x_recon, x).item())
+    recon_rmse = torch.sqrt(torch.mean((x_recon - x) ** 2)).item()
+
+    print("Validation stats")
+    print("=======================")
+    print(f"    R2 of a: {r2_a:.4f}")
+    print(f"    RMSE of a: {rmse_a:.4f}")
+    print(f"    Error of a: {error_a:.4f}")
+    print(f"    R2 of c: {r2_c:.4f}")
+    print(f"    RMSE of c: {rmse_c:.4f}")
+    print(f"    Error of c: {error_c:.4f}")
+    print(f"    Correlation of reconstruction: {recon_corr:.4f}")
+    print(f"    RMSE of reconstruction: {recon_rmse:.4f}")
+
+    x_index = random.randint(0, x.size(0) - 1)
+    x = x[x_index, :].cpu().numpy().ravel()
+    x_recon = x_recon[x_index, :].cpu().numpy().ravel()
+
+    return AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
+                            r2_a, r2_c, rmse_a, rmse_c, error_a, error_c,
+                            recon_corr, recon_rmse)
+
+
+def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device):
+    model.eval()
+    charge_real = None
+    charge_pred = None
+
+    with torch.no_grad():
+        x = x.to(device)
+        charge_real = charge.cpu().numpy()
+
+        x_recon, charge_pred, _ = model.forward_internal(x)
+        charge_pred = charge_pred.cpu().numpy()
+
+    a_real = charge_real[:, 0].ravel()
+    a_pred = charge_pred[:, 0].ravel()
+
+    c_real = charge_real[:, 1].ravel()
+    c_pred = charge_pred[:, 1].ravel()
+
+    r2_a = r2_score(a_real, a_pred)
+    r2_c = r2_score(c_real, c_pred)
+
+    rmse_a = root_mean_squared_error(a_real, a_pred)
+    rmse_c = root_mean_squared_error(c_real, c_pred)
+
+    error_a = float(np.sum(np.abs((a_real - a_pred) / a_real)) / len(a_real))
+    error_c = float(np.sum(np.abs((c_real - c_pred) / c_real)) / len(c_real))
+
+    corr = CorrelationLoss()
+
+    recon_corr = (1 - corr(x_recon, x).item())
+    recon_rmse = torch.sqrt(torch.mean((x_recon - x) ** 2)).item()
+
+    print("Validation stats")
+    print("=======================")
+    print(f"    R2 of a: {r2_a:.4f}")
+    print(f"    RMSE of a: {rmse_a:.4f}")
+    print(f"    Error of a: {error_a:.4f}")
+    print(f"    R2 of c: {r2_c:.4f}")
+    print(f"    RMSE of c: {rmse_c:.4f}")
+    print(f"    Error of c: {error_c:.4f}")
+    print(f"    Correlation of reconstruction: {recon_corr:.4f}")
+    print(f"    RMSE of reconstruction: {recon_rmse:.4f}")
+
+    x_index = random.randint(0, x.size(0) - 1)
+    x = x[x_index, :].cpu().numpy().ravel()
+    x_recon = x_recon[x_index, :].cpu().numpy().ravel()
+
+    return AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
+                            r2_a, r2_c, rmse_a, rmse_c, error_a, error_c,
+                            recon_corr, recon_rmse)
 
 
 if __name__ == "__main__":
@@ -373,16 +505,21 @@ if __name__ == "__main__":
 
     train = None
     test = None
+    validate = None
 
     model_name = int(input("Enter which model to use; 1. autoencoder, 2. variational autoencoder\n>>>"))
     if model_name == 1:
         model = SCIAutoencoder(input_num, 10).to(device)
         train = train_ae
         test = test_ae
+        validate = validate_ae
+        model_name = "Autoencoder"
     elif model_name == 2:
         model = SCIVariationalAutoencoder(input_num, 10).to(device)
         train = train_vae
         test = test_vae
+        validate = validate_vae
+        model_name = "Variational Autoencoder"
     else:
         print("Invalid model")
         exit(-1)
@@ -449,3 +586,80 @@ if __name__ == "__main__":
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_loss': best_loss
             }, checkpoint_path)
+
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    best_loss = checkpoint['best_loss']
+
+    r2_scores = [[], []]
+    rmse_scores = [[], []]
+    errors = [[], []]
+    recon_corrs = []
+    recon_rmse_scores = []
+    save_dir = f"../data/unsupervised/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    plt.style.use('default')
+    plt.rcParams['figure.figsize'] = (16, 12)
+    plt.rcParams['font.size'] = 15
+
+    for i in range(n_validate):
+        validation_data = validate(
+            torch.tensor(input_validate[i], dtype=torch.float32),
+            torch.tensor(output_validate[i], dtype=torch.float32),
+            model, device
+        )
+        r2_scores[0].append(validation_data.r2_a)
+        r2_scores[1].append(validation_data.r2_c)
+        rmse_scores[0].append(validation_data.rmse_a)
+        rmse_scores[1].append(validation_data.rmse_c)
+        errors[0].append(validation_data.error_a * 100.0)
+        errors[1].append(validation_data.error_c * 100.0)
+        recon_corrs.append(validation_data.recon_corr)
+        recon_rmse_scores.append(validation_data.recon_rmse)
+
+        plt.close("all")
+
+        fig, ax = plt.subplots(1, 2, sharey=True, squeeze=True)
+        fig.suptitle(f"SCI {model_name} central charge regression")
+
+        ax[0].set_title(f"a R2 = {validation_data.r2_a:.3f}, RMSE = {validation_data.rmse_a:.3f}")
+        ax[0].scatter(validation_data.a_real, validation_data.a_pred, color="blue")
+        y_range = [np.min(validation_data.a_real), np.max(validation_data.a_real)]
+        ax[0].plot(y_range, y_range, linestyle="--", color="red")
+        ax[0].set_xlabel("Real a")
+        ax[0].set_ylabel("Predicted a")
+
+        ax[1].set_title(f"c R2 = {validation_data.r2_c:.3f}, RMSE = {validation_data.rmse_c:.3f}")
+        ax[1].scatter(validation_data.c_real, validation_data.c_pred, color="blue")
+        y_range = [np.min(validation_data.c_real), np.max(validation_data.c_real)]
+        ax[1].plot(y_range, y_range, linestyle="--", color="red")
+        ax[1].set_xlabel("Real c")
+        ax[1].set_ylabel("Predicted c")
+
+        plt.savefig(f"{save_dir}/sci_charge_ae_{model_name}_charge_regression_{i + 1}.png")
+
+        plt.close("all")
+
+        fig, ax = plt.subplots()
+        fig.suptitle(f"SCI {model_name} KDE data reconstruction")
+        ax.plot(GRID, validation_data.x, color="blue", label="Real")
+        ax.plot(GRID, validation_data.x_recon, color="red", label="Reconstructed")
+        ax.set_xlabel("Operator dimension")
+        ax.set_ylabel("Approximate operator number")
+        ax.legend()
+
+        plt.savefig(f"{save_dir}/sci_charge_ae_{model_name}_kde_reconstruction_{i + 1}.png")
+
+    with open(f"{save_dir}/sci_charge_ae_{model_name}_{file_suffix}.csv", 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Score"] + [i + 1 for i in range(n_validate)])
+        writer.writerow(["R2 of a"] + r2_scores[0])
+        writer.writerow(["R2 of c"] + r2_scores[1])
+        writer.writerow(["RMSE of a"] + rmse_scores[0])
+        writer.writerow(["RMSE of c"] + rmse_scores[1])
+        writer.writerow(["Error of a (%)"] + errors[0])
+        writer.writerow(["Error of c (%)"] + errors[1])
+        writer.writerow(["Reconstruction correlation"] + recon_corrs)
+        writer.writerow(["Reconstruction RMSE"] + recon_rmse_scores)
