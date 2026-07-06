@@ -101,7 +101,7 @@ class SCIAutoencoder(nn.Module):
     # For SHAP value calculation
     def forward(self, x: torch.Tensor):
         x_recon, charges, z = self.forward_internal(x)
-        return charges
+        return z
 
 
 class SCIVariationalAutoencoder(nn.Module):
@@ -154,7 +154,7 @@ class SCIVariationalAutoencoder(nn.Module):
     # For SHAP value calculation
     def forward(self, x: torch.Tensor):
         x_recon, charges, mu, logvar = self.forward_internal(x)
-        return charges
+        return self.reparameterize(mu, logvar)
 
 
 class AEReconLoss(nn.Module):
@@ -323,6 +323,7 @@ class AEValidationData():
                  rmse_a: float, rmse_c: float,
                  error_a: float, error_c: float,
                  recon_corr: float, recon_rmse: float):
+        self.shap_values: shap.Explanation = None
         self.a_real = a_real
         self.a_pred = a_pred
         self.c_real = c_real
@@ -339,7 +340,7 @@ class AEValidationData():
         self.recon_rmse = recon_rmse
 
 
-def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device):
+def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device, calculate_shap: bool=False):
     model.eval()
     charge_real = None
     charge_pred = None
@@ -382,16 +383,28 @@ def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, de
     print(f"    Correlation of reconstruction: {recon_corr:.4f}")
     print(f"    RMSE of reconstruction: {recon_rmse:.4f}")
 
+    shap_values = None
+
+    if calculate_shap:
+        print("Calculating SHAP values...")
+        explainer = shap.DeepExplainer(model, x)
+        shap_values = explainer(x[:10, :])
+        shap_values.data = shap_values.data.detach().cpu().numpy()
+
     x_index = random.randint(0, x.size(0) - 1)
     x = x[x_index, :].cpu().numpy().ravel()
     x_recon = x_recon[x_index, :].cpu().numpy().ravel()
 
-    return AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
+    validation_data = AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
                             r2_a, r2_c, rmse_a, rmse_c, error_a, error_c,
                             recon_corr, recon_rmse)
+    if calculate_shap:
+        validation_data.shap_values = shap_values
+
+    return validation_data
 
 
-def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device):
+def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device, calculate_shap: bool=False):
     model.eval()
     charge_real = None
     charge_pred = None
@@ -434,13 +447,24 @@ def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, d
     print(f"    Correlation of reconstruction: {recon_corr:.4f}")
     print(f"    RMSE of reconstruction: {recon_rmse:.4f}")
 
+    shap_values = None
+
+    if calculate_shap:
+        print("Calculating SHAP values...")
+        explainer = shap.DeepExplainer(model, x)
+        shap_values = explainer(x[:10, :])
+
     x_index = random.randint(0, x.size(0) - 1)
     x = x[x_index, :].cpu().numpy().ravel()
     x_recon = x_recon[x_index, :].cpu().numpy().ravel()
 
-    return AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
-                            r2_a, r2_c, rmse_a, rmse_c, error_a, error_c,
-                            recon_corr, recon_rmse)
+    validation_data = AEValidationData(a_real, a_pred, c_real, c_pred, x, x_recon,
+                                       r2_a, r2_c, rmse_a, rmse_c, error_a, error_c,
+                                       recon_corr, recon_rmse)
+    if calculate_shap:
+        validation_data.shap_values = shap_values
+
+    return validation_data
 
 
 if __name__ == "__main__":
@@ -501,6 +525,7 @@ if __name__ == "__main__":
     print(f"Device: {device}")
 
     input_num = input_train[0].shape[1]
+    latent_dim = 10
     model = None
 
     train = None
@@ -509,13 +534,13 @@ if __name__ == "__main__":
 
     model_name = int(input("Enter which model to use; 1. autoencoder, 2. variational autoencoder\n>>>"))
     if model_name == 1:
-        model = SCIAutoencoder(input_num, 10).to(device)
+        model = SCIAutoencoder(input_num, latent_dim).to(device)
         train = train_ae
         test = test_ae
         validate = validate_ae
         model_name = "Autoencoder"
     elif model_name == 2:
-        model = SCIVariationalAutoencoder(input_num, 10).to(device)
+        model = SCIVariationalAutoencoder(input_num, latent_dim).to(device)
         train = train_vae
         test = test_vae
         validate = validate_vae
@@ -608,8 +633,30 @@ if __name__ == "__main__":
         validation_data = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
-            model, device
+            model, device, i == 0
         )
+
+        if i == 0:
+            validation_data.shap_values.feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))]
+            for j in range(latent_dim):
+                shap_latent = validation_data.shap_values[:,:,j]
+
+                plt.close("all")
+                fig, ax = plt.subplots(figsize=(24, 16))
+                ax.set_title(f"SHAP values for latent vector element {j + 1}")
+                shap.plots.beeswarm(shap_latent, max_display=15, show=False, color_bar=True,
+                                    ax=ax, group_remaining_features=True, plot_size=None)
+
+                plt.savefig(f"{save_dir}/sci_charge_ae_{model_name}_latent{j + 1}_shap.png")
+
+                plt.close("all")
+                fig, ax = plt.subplots(figsize=(24, 16))
+                ax.set_title(f"Absolute average SHAP values for latent vector element {i + 1}")
+                shap.plots.bar(shap_latent, max_display=15, show=False, ax=ax)
+
+                plt.savefig(f"{save_dir}/sci_charge_ae_{model_name}_latent{j + 1}_shap_abs_avg.png")
+
+
         r2_scores[0].append(validation_data.r2_a)
         r2_scores[1].append(validation_data.r2_c)
         rmse_scores[0].append(validation_data.rmse_a)
