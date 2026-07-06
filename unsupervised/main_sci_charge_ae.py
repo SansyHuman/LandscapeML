@@ -8,6 +8,7 @@ import numpy as np
 import sys
 import os
 import csv
+import math
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
@@ -69,46 +70,22 @@ class SCIAutoencoder(nn.Module):
 
         self.encoder = FullyConnectedNetwork(
             input_dim, latent_dim,
-            (input_dim, nn.GELU()),
-            (input_dim // 2, nn.GELU()),
             (input_dim // 2, nn.GELU()),
             (input_dim // 3, nn.GELU()),
-            (input_dim // 3, nn.GELU()),
             (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
+            (input_dim // 5, nn.GELU()),
             (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU())
         )
 
         self.regressor = nn.Linear(latent_dim, 2)
 
         self.decoder = FullyConnectedNetwork(
             latent_dim, input_dim,
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
             (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
+            (input_dim // 5, nn.GELU()),
             (input_dim // 4, nn.GELU()),
             (input_dim // 3, nn.GELU()),
-            (input_dim // 3, nn.GELU()),
             (input_dim // 2, nn.GELU()),
-            (input_dim // 2, nn.GELU()),
-            (input_dim, nn.GELU()),
         )
 
     def forward_internal(self, x: torch.Tensor):
@@ -128,49 +105,25 @@ class SCIVariationalAutoencoder(nn.Module):
         super(SCIVariationalAutoencoder, self).__init__()
 
         self.encoder = FullyConnectedNetwork(
-            input_dim, input_dim // 8,
-            (input_dim, nn.GELU()),
-            (input_dim // 2, nn.GELU()),
+            input_dim, input_dim // 6,
             (input_dim // 2, nn.GELU()),
             (input_dim // 3, nn.GELU()),
-            (input_dim // 3, nn.GELU()),
             (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU())
+            (input_dim // 5, nn.GELU()),
         )
         self.fc_elu = nn.GELU()
-        self.fc_mu = nn.Linear(input_dim // 8, latent_dim)
-        self.fc_logvar = nn.Linear(input_dim // 8, latent_dim)
+        self.fc_mu = nn.Linear(input_dim // 6, latent_dim)
+        self.fc_logvar = nn.Linear(input_dim // 6, latent_dim)
 
         self.regressor = nn.Linear(latent_dim, 2)
 
         self.decoder = FullyConnectedNetwork(
             latent_dim, input_dim,
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
-            (input_dim // 8, nn.GELU()),
             (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 6, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
-            (input_dim // 4, nn.GELU()),
+            (input_dim // 5, nn.GELU()),
             (input_dim // 4, nn.GELU()),
             (input_dim // 3, nn.GELU()),
-            (input_dim // 3, nn.GELU()),
             (input_dim // 2, nn.GELU()),
-            (input_dim // 2, nn.GELU()),
-            (input_dim, nn.GELU()),
         )
 
     def encode(self, x: torch.Tensor):
@@ -279,6 +232,7 @@ def test_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module,
     model.eval()
     test_loss = 0.0
     recon_corr = 0.0
+    recon_mse = 0.0
     charge_error = 0.0
     test_cnt = 0
     recon_cnt = 0
@@ -302,6 +256,7 @@ def test_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module,
             corr = CorrelationLoss()
 
             recon_corr += (1 - corr(x_recon, x).item()) * x.size(0)
+            recon_mse = torch.mean((x_recon - x) ** 2).item() * x.size(0)
             recon_cnt += x.size(0)
 
             charge_pred = charge_pred.cpu().numpy()
@@ -311,7 +266,7 @@ def test_ae(loader: DataLoader, model: SCIAutoencoder, recon_loss_fn: nn.Module,
             charge_error += np.sum(err)
             charge_cnt += len(err)
 
-    return test_loss, recon_corr, charge_error, test_cnt, recon_cnt, charge_cnt
+    return test_loss, recon_corr, recon_mse, charge_error, test_cnt, recon_cnt, charge_cnt
 
 
 def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn: nn.Module, charge_loss_fn: nn.Module,
@@ -319,6 +274,7 @@ def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn
     model.eval()
     test_loss = 0.0
     recon_corr = 0.0
+    recon_mse = 0.0
     charge_error = 0.0
     test_cnt = 0
     recon_cnt = 0
@@ -342,6 +298,7 @@ def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn
             corr = CorrelationLoss()
 
             recon_corr += (1 - corr(x_recon, x).item()) * x.size(0)
+            recon_mse = torch.mean((x_recon - x) ** 2).item() * x.size(0)
             recon_cnt += x.size(0)
 
             charge_pred = charge_pred.cpu().numpy()
@@ -351,14 +308,14 @@ def test_vae(loader: DataLoader, model: SCIVariationalAutoencoder, recon_loss_fn
             charge_error += np.sum(err)
             charge_cnt += len(err)
 
-    return test_loss, recon_corr, charge_error, test_cnt, recon_cnt, charge_cnt
+    return test_loss, recon_corr, recon_mse, charge_error, test_cnt, recon_cnt, charge_cnt
 
 
 if __name__ == "__main__":
     print(sys.version)
     print("GIL enabled:", sys._is_gil_enabled())
 
-    os.makedirs('../data/regression', exist_ok=True)
+    os.makedirs('../data/unsupervised', exist_ok=True)
     csv.field_size_limit(np.iinfo(np.int32).max)
 
     filename = input("Enter file name to load: ")
@@ -446,28 +403,32 @@ if __name__ == "__main__":
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         best_loss = checkpoint['best_loss']
 
+    loss_charge_weight = 50.0
+
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
             train(dataloader_train[i], model, recon_criterion, charge_criterion, optimizer, device,
-                     loss_charge_weight=5.0, c=0.00001)
+                     loss_charge_weight=loss_charge_weight, c=0.00001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
         total_loss = 0.0
         total_recon_corr = 0.0
+        total_recon_mse = 0.0
         total_charge_error = 0.0
         total_cnt = 0
         total_recon_cnt = 0
         total_charge_cnt = 0
 
         for i in range(n_test):
-            loss, recon_corr, charge_error, cnt, recon_cnt, charge_cnt = test(
+            loss, recon_corr, recon_mse, charge_error, cnt, recon_cnt, charge_cnt = test(
                 dataloader_test[i], model, recon_criterion, charge_criterion, device,
-                loss_charge_weight=1.0
+                loss_charge_weight=loss_charge_weight
             )
             total_loss += loss
             total_recon_corr += recon_corr
+            total_recon_mse += recon_mse
             total_charge_error += charge_error
             total_cnt += cnt
             total_recon_cnt += recon_cnt
@@ -476,9 +437,10 @@ if __name__ == "__main__":
 
         total_loss /= total_cnt
         total_recon_corr /= total_recon_cnt
+        total_recon_mse /= total_recon_cnt
         total_charge_error /= total_charge_cnt
         print(f"Epoch {epoch + 1}/{n_epochs} test loss: {total_loss}")
-        print(f"reconstruction kde correlation: {total_recon_corr:.4f} charge error: {total_charge_error * 100:.2f} %")
+        print(f"reconstruction correlation: {total_recon_corr:.4f} reconstruction rmse: {math.sqrt(total_recon_mse):.4f} charge error: {total_charge_error * 100:.2f} %")
         if total_loss < best_loss:
             best_loss = total_loss
             print('New best loss obtained. Saving model...')
