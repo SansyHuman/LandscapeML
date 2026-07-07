@@ -388,7 +388,7 @@ def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, de
     if calculate_shap:
         print("Calculating SHAP values...")
         explainer = shap.DeepExplainer(model, x)
-        shap_values = explainer(x[:10, :])
+        shap_values = explainer(x)
         shap_values.data = shap_values.data.detach().cpu().numpy()
 
     x_index = random.randint(0, x.size(0) - 1)
@@ -452,7 +452,7 @@ def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, d
     if calculate_shap:
         print("Calculating SHAP values...")
         explainer = shap.DeepExplainer(model, x)
-        shap_values = explainer(x[:10, :])
+        shap_values = explainer(x)
 
     x_index = random.randint(0, x.size(0) - 1)
     x = x[x_index, :].cpu().numpy().ravel()
@@ -710,3 +710,12 @@ if __name__ == "__main__":
         writer.writerow(["Error of c (%)"] + errors[1])
         writer.writerow(["Reconstruction correlation"] + recon_corrs)
         writer.writerow(["Reconstruction RMSE"] + recon_rmse_scores)
+
+    with open(f"{save_dir}/sci_charge_ae_{model_name}_{file_suffix}_charge_eq.csv", 'w', newline='') as f:
+        weight = model.regressor.weight.detach().cpu().numpy().tolist()
+        bias = model.regressor.bias.detach().cpu().numpy().tolist()
+
+        writer = csv.writer(f)
+        writer.writerow(["Charge"] + [f"x{i + 1}" for i in range(latent_dim)] + ["bias"])
+        writer.writerow(["a"] + weight[0] + [bias[0]])
+        writer.writerow(["c"] + weight[1] + [bias[1]])
