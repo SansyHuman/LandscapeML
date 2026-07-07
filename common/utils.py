@@ -2,6 +2,7 @@ import math
 import json
 import os
 from typing import Union, Any
+from functools import reduce
 
 from pyspark.ml.feature import Bucketizer
 from pyspark.sql import functions as F
@@ -541,6 +542,44 @@ def balanced_sample_bins(df: ps.DataFrame, charge_col: str, min_charge: float, m
     sampled = ranked.filter(F.col("rank") <= n_per_bins)
 
     return sampled.drop("rank", "bucket")
+
+
+def train_test_bins(df: ps.DataFrame, charge_col: str, min_charge: float, max_charge: float, n_bins: int, train_ratio: float):
+    """
+    Divide data into train and test sets where the ratio of train set is equal in all bins of charges.
+    """
+
+    assert 0 <= train_ratio <= 1
+
+    # Filter rows with specified charge range
+    filtered = df.filter((F.col(charge_col) >= min_charge) & (F.col(charge_col) < max_charge))
+
+    # Discretize into n_bins bins
+    bin_step = (max_charge - min_charge) / n_bins
+    splits = [min_charge + i * bin_step for i in range(n_bins)] + [float("inf")]
+    discretizer = Bucketizer(
+        splits=splits,
+        inputCol=charge_col,
+        outputCol="bucket"
+    )
+    bucketed = discretizer.transform(filtered)
+
+    # divide train-test set for each bins
+    test_ratio = 1.0 - train_ratio
+
+    train_dfs = []
+    test_dfs = []
+
+    for b in range(n_bins):
+        bin_df = bucketed.filter(bucketed.bucket == b)
+        train_bin, test_bin = bin_df.randomSplit([train_ratio, test_ratio])
+        train_dfs.append(train_bin)
+        test_dfs.append(test_bin)
+
+    train_df = reduce(lambda x, y: x.union(y), train_dfs)
+    test_df = reduce(lambda x, y: x.union(y), test_dfs)
+
+    return train_df.drop("bucket"), test_df.drop("bucket")
 
 
 def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth: float, normalize=True) -> np.ndarray:

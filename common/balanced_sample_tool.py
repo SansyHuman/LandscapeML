@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import math
 import pyspark.sql.dataframe as ps
 
-from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins
+from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins, train_test_bins
 
 
 class TheorySampler:
@@ -18,7 +18,7 @@ class TheorySampler:
     def __init__(self, filename: Union[str, None]=None):
         if filename is not None:
             self.filename = filename
-            self.spark = SparkSession.builder.appName("CSVLoader").config("spark.driver.memory", "16g").config("spark.executor.memory", "16g").getOrCreate()
+            self.spark = SparkSession.builder.appName("CSVLoader").config("spark.driver.memory", "32g").config("spark.executor.memory", "32g").getOrCreate()
             self.df = self.spark.read.csv(
                 filename,
                 header=True,  # use first row as column names
@@ -155,6 +155,19 @@ class TheorySampler:
         sample.df = balanced_sample_bins(self.df, charge_col, min_charge, max_charge, n_bins, n_per_bins)
 
         return sample
+
+    def get_train_test_sets_bins(self, charge_col: str, min_charge: float, max_charge: float, n_bins: int, train_ratio: float) -> tuple[Self, Self]:
+        train = TheorySampler()
+        test = TheorySampler()
+        train.filename = self.filename
+        test.filename = self.filename
+        train.spark = self.spark
+        test.spark = self.spark
+
+        assert self.df is not None
+        train.df, test.df = train_test_bins(self.df, charge_col, min_charge, max_charge, n_bins, train_ratio)
+
+        return train, test
 
     def get_theory_num(self) -> int:
         return self.df.select("Name").distinct().count()
