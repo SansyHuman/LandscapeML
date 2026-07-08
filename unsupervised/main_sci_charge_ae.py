@@ -19,9 +19,11 @@ from common.sci_parser import SuperConformalIndex
 from common.utils import FullyConnectedNetwork, GenericDataset, CorrelationLoss
 
 
-def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, max_charge: float,
-                   n_bins: int, n_per_bins: int, n_train: int, n_test: int, n_validate: int,
-                   grid: np.ndarray, kde_bandwidth: float):
+def build_data_sci(sampler: TheorySampler, train_sampler: TheorySampler, test_sampler: TheorySampler,
+                        charge_col: str, min_charge: float, max_charge: float,
+                        n_bins: int, n_per_bins_train: int, n_per_bins_test: int, n_per_bins_validate: int,
+                        n_train: int, n_test: int, n_validate: int,
+                        grid: np.ndarray, kde_bandwidth: float):
     input_train = []
     output_train = []
     input_test = []
@@ -51,17 +53,17 @@ def build_data_sci(sampler: TheorySampler, charge_col: str, min_charge: float, m
             id_set.append(id_data)
 
     for i in range(n_train):
-        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+        build_dataset(train_sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins_train),
                       input_train, output_train)
         print(f"Train data {i + 1} built.")
 
     for i in range(n_test):
-        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+        build_dataset(test_sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins_test),
                       input_test, output_test)
         print(f"Test data {i + 1} built.")
 
     for i in range(n_validate):
-        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins),
+        build_dataset(sampler.get_balanced_bins_sample(charge_col, min_charge, max_charge, n_bins, n_per_bins_validate),
                       input_validate, output_validate, id_set=id_validate)
         print(f"Validation data {i + 1} built.")
 
@@ -498,15 +500,28 @@ if __name__ == "__main__":
     max_charge = float(input("Enter maximum charge: "))
     n_bins = int(input("Enter number of bins: "))
 
+    print("Whole data stats")
     theory_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
-    n_per_bins = int(input("Enter number of theories per bin: "))
+
+    train_ratio = float(input("Enter train ratio: "))
+    train_sampler, test_sampler = theory_sampler.get_train_test_sets_bins(central_charge, min_charge, max_charge,
+                                                                          n_bins, train_ratio)
+    print("Train data stats")
+    train_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
+    print("Test data stats")
+    test_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
 
     n_train = int(input("Enter number of training samples: "))
+    n_per_bins_train = int(input("Enter number of training samples per bin: "))
     n_test = int(input("Enter number of testing samples: "))
+    n_per_bins_test = int(input("Enter number of testing samples per bin: "))
     n_validate = int(input("Enter number of validation samples: "))
+    n_per_bins_validate = int(input("Enter number of validation samples per bin(validation data are chosen from the whole dataset): "))
 
     input_train, output_train, input_test, output_test, id_validate, input_validate, output_validate = build_data_sci(
-        theory_sampler, central_charge, min_charge, max_charge, n_bins, n_per_bins,
+        theory_sampler, train_sampler, test_sampler,
+        central_charge, min_charge, max_charge,
+        n_bins, n_per_bins_train, n_per_bins_test, n_per_bins_validate,
         n_train, n_test, n_validate, GRID, KDE_BANDWIDTH
     )
 
@@ -693,6 +708,7 @@ if __name__ == "__main__":
         fig.suptitle(f"SCI {model_name} KDE data reconstruction")
         ax.plot(GRID, validation_data.x, color="blue", label="Real")
         ax.plot(GRID, validation_data.x_recon, color="red", label="Reconstructed")
+        ax.fill_between(GRID, validation_data.x, validation_data.x_recon, color="lightcoral", label="Error")
         ax.set_xlabel("Operator dimension")
         ax.set_ylabel("Approximate operator number")
         ax.legend()
