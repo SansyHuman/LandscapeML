@@ -83,7 +83,7 @@ class SuperConformalIndex:
         self.dims.sort()
         self.relevant_dims.sort()
         # smallest dimension among all operators
-        self.smallest_dim = self.relevant_dims[0]
+        self.smallest_dim = self.dims[0]
 
         terms_fermionic = self.index.find_with(fermionic)
         tmp_dims = set()

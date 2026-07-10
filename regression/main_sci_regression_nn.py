@@ -215,18 +215,12 @@ if __name__ == "__main__":
     input_num = input_train[0].shape[1]
     model = FullyConnectedNetwork(
         input_num, 1,
-        (input_num * 4, nn.GELU()),
-        (input_num * 4, nn.GELU()),
-        (input_num * 16, nn.GELU()),
-        (input_num * 16, nn.GELU()),
-        (input_num * 32, nn.GELU()),
-        (input_num * 32, nn.GELU()),
-        (input_num * 32, nn.GELU()),
-        (input_num * 32, nn.GELU()),
-        (input_num * 8, nn.GELU()),
-        (input_num * 8, nn.GELU()),
         (input_num * 2, nn.GELU()),
-        (input_num * 1, nn.GELU()),
+        (input_num, nn.GELU()),
+        (input_num // 2, nn.GELU()),
+        (input_num // 4, nn.GELU()),
+        (input_num // 8, nn.GELU()),
+        (input_num // 16, nn.GELU()),
     ).to(device)
 
     print("Charge calculation model shape: ", model(
@@ -234,7 +228,7 @@ if __name__ == "__main__":
     ).shape)
 
     criterion = MRSELoss(multiplier=max_charge)
-    optimizer = torch.optim.Adam(model.parameters(), lr=2e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     best_loss = 1e10
 
     n_epochs = int(input("Enter number of epochs: "))
@@ -251,7 +245,7 @@ if __name__ == "__main__":
     for epoch in range(n_epochs):
         print(f"Train epoch {epoch + 1}...")
         for i in range(n_train):
-            train(dataloader_train[i], model, criterion, optimizer, device, 0.00001)
+            train(dataloader_train[i], model, criterion, optimizer, device, 0.0001)
             print(f"Training set {i + 1}/{n_train} complete.")
 
         print(f"Test epoch {epoch + 1}...")
@@ -297,7 +291,7 @@ if __name__ == "__main__":
         y_real, y_pred, r2, rmse, error, shap_value, outlier_mask = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
-            model, device, i == 0 and False)
+            model, device, i == 0)
         r2_scores.append(r2)
         rmse_scores.append(rmse)
         errors.append(error * 100.0)

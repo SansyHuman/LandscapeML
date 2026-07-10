@@ -1,0 +1,2 @@
+../data/regression/2026-07-10_10_43_55 a charge regression FCN with charge 6.0-9.0/sci_regression_nn_a_6.0_9.0_4.5_0.025_0.05_shap.csv
+../data/regression/2026-07-10_11_06_33 c charge regression FCN with charge 6.0-9.0/sci_regression_nn_c_6.0_9.0_4.5_0.025_0.05_shap.csv

@@ -68,7 +68,6 @@ if __name__ == '__main__':
 
     ax.plot(spectrum_label, a_shap_spectrum, "o-", color="red", label="a")
     ax.plot(spectrum_label, c_shap_spectrum, "o-", color="blue", label="c")
-    ax.set_yscale("log")
     ax.set_xlabel("Operator dimension")
     ax.set_ylabel("Absolute average SHAP value")
     ax.legend()
