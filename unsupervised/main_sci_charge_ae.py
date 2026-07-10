@@ -6,7 +6,6 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import matplotlib.pyplot as plt
-import shap
 import torch
 import numpy as np
 import sys
@@ -325,6 +324,7 @@ class AEValidationData():
                  rmse_a: float, rmse_c: float,
                  error_a: float, error_c: float,
                  recon_corr: float, recon_rmse: float):
+        import shap
         self.shap_values: shap.Explanation = None
         self.a_real = a_real
         self.a_pred = a_pred
@@ -343,6 +343,7 @@ class AEValidationData():
 
 
 def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device, calculate_shap: bool=False):
+    import shap
     model.eval()
     charge_real = None
     charge_pred = None
@@ -407,6 +408,7 @@ def validate_ae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, de
 
 
 def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, device: torch.device, calculate_shap: bool=False):
+    import shap
     model.eval()
     charge_real = None
     charge_pred = None
@@ -470,6 +472,7 @@ def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, d
 
 
 if __name__ == "__main__":
+    import shap
     print(sys.version)
     print("GIL enabled:", sys._is_gil_enabled())
 
