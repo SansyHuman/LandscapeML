@@ -543,7 +543,7 @@ if __name__ == "__main__":
     print(f"Device: {device}")
 
     input_num = input_train[0].shape[1]
-    latent_dim = 10
+    latent_dim = int(input("Enter the latent dimension: "))
     model = None
 
     train = None
