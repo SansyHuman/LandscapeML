@@ -669,7 +669,7 @@ if __name__ == "__main__":
 
                 plt.close("all")
                 fig, ax = plt.subplots(figsize=(24, 16))
-                ax.set_title(f"Absolute average SHAP values for latent vector element {i + 1}")
+                ax.set_title(f"Absolute average SHAP values for latent vector element {j + 1}")
                 shap.plots.bar(shap_latent, max_display=15, show=False, ax=ax)
 
                 plt.savefig(f"{save_dir}/sci_charge_ae_{model_name}_latent{j + 1}_shap_abs_avg.png")
