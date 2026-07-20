@@ -1,5 +1,6 @@
 import datetime
 import random
+
 from common.balanced_sample_tool import TheorySampler
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
@@ -12,7 +13,7 @@ import torch.nn as nn
 
 import matplotlib.pyplot as plt
 from common.sci_parser import SuperConformalIndex
-from clustering_common import cluster_pair, calculate_feature_importance
+from clustering_common import cluster_pair, cluster_pair_no_reduction
 
 
 def build_data(sampler: TheorySampler, autoencoder: nn.Module, device: torch.device, n_per_theory: int, n_iter: int, grid: np.ndarray, kde_bandwidth: float):
@@ -97,12 +98,21 @@ if __name__ == '__main__':
 
     data_per_theory = build_data(cutoff_sampler, autoencoder, device, n_sample, n_iter, GRID, KDE_BANDWIDTH)
 
+    program_name = int(input("Use dimensionality reduction? 1. Yes 2. No\n>>>"))
+    cluster_func = None
+    if program_name == 1:
+        program_name = "with_reduction"
+        cluster_func = lambda x, y: cluster_pair(x, y, False)[0]
+    elif program_name == 2:
+        program_name = "no_reduction"
+        cluster_func = cluster_pair_no_reduction
+
     def pair_calculation(theory1: str, theory2: str):
         print(f"Calculating accuracy for {theory1} and {theory2}")
         acc = []
 
         for i in range(n_iter):
-            acc_score, _ = cluster_pair(data_per_theory[theory1][i], data_per_theory[theory2][i])
+            acc_score = cluster_func(data_per_theory[theory1][i], data_per_theory[theory2][i])
             acc.append(acc_score)
 
         mean_acc= float(np.mean(acc))
@@ -120,13 +130,13 @@ if __name__ == '__main__':
     save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
-    with open(f"{save_dir}/autoencoder_cluster_pairwise_acc.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/autoencoder_cluster_pairwise_{program_name}_acc.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + accuracy[i])
 
-    with open(f"{save_dir}/autoencoder_cluster_pairwise_stdev.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/autoencoder_cluster_pairwise_{program_name}_stdev.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
@@ -149,4 +159,4 @@ if __name__ == '__main__':
     cmap_plot = ax[1].matshow(stdev, vmin=0.0, vmax=np.max(stdev), cmap='gray_r')
     fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
 
-    plt.savefig(f'{save_dir}/autoencoder_cluster_pairwise.png')
+    plt.savefig(f'{save_dir}/autoencoder_cluster_pairwise_{program_name}.png')

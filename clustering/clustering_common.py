@@ -44,6 +44,30 @@ def cluster_pair(theory1_input: np.ndarray, theory2_input: np.ndarray, calculate
     return acc, sil_score
 
 
+def cluster_pair_no_reduction(theory1_input: np.ndarray, theory2_input: np.ndarray) -> float:
+    """
+    Cluster two sets of data using KMeans clustering without dimensionality reduction.
+    :param theory1_input: Input data for theory 1.
+    :param theory2_input: Input data for theory 2.
+    :return: Accuracy of the clustering model.
+    """
+    data_num = theory1_input.shape[0]
+    X = np.vstack((theory1_input, theory2_input))
+    y_true = np.hstack((np.zeros(data_num, dtype=int), np.ones(data_num, dtype=int)), dtype=int)
+
+    Xs = StandardScaler().fit_transform(X)
+
+    kmeans = KMeans(n_clusters=2, n_init=10, random_state=42)
+    kmeans.fit(Xs)
+    y_pred = kmeans.labels_
+
+    acc_direct = np.mean(y_pred == y_true)
+    acc_flipped = np.mean(y_pred == (1 - y_true))
+    acc = float(max(acc_direct, acc_flipped))
+
+    return acc
+
+
 def calculate_feature_importance(theory1_input: np.ndarray, theory2_input: np.ndarray) -> tuple[float, np.ndarray]:
     """
     Calculate the accuracy of clustering of two sets and importance score of each feature.
