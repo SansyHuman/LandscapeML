@@ -130,13 +130,13 @@ if __name__ == '__main__':
     save_dir = f"../data/clustering/{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}"
     os.makedirs(save_dir, exist_ok=True)
 
-    with open(f"{save_dir}/autoencoder_cluster_pairwise_{program_name}_acc.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/autoencoder_cluster_pairwise_{latent_dim}_{program_name}_acc.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
             writer.writerow([theories[i]] + accuracy[i])
 
-    with open(f"{save_dir}/autoencoder_cluster_pairwise_{program_name}_stdev.csv", 'w', newline='') as csv_file:
+    with open(f"{save_dir}/autoencoder_cluster_pairwise_{latent_dim}_{program_name}_stdev.csv", 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(["Theories"] + theories)
         for i in range(n_theory):
@@ -147,7 +147,7 @@ if __name__ == '__main__':
     plt.rcParams['font.size'] = 12
 
     fig, ax = plt.subplots(nrows=1, ncols=2, squeeze=True)
-    fig.suptitle("Pairwise clustering accuracies and stdevs")
+    fig.suptitle(f"Pairwise clustering accuracies and stdevs with latent dimension {latent_dim}")
 
     vmin, vmax = 0.5, 1.0
 
@@ -159,4 +159,4 @@ if __name__ == '__main__':
     cmap_plot = ax[1].matshow(stdev, vmin=0.0, vmax=np.max(stdev), cmap='gray_r')
     fig.colorbar(cmap_plot, ax=ax[1], shrink=0.7)
 
-    plt.savefig(f'{save_dir}/autoencoder_cluster_pairwise_{program_name}.png')
+    plt.savefig(f'{save_dir}/autoencoder_cluster_pairwise_{latent_dim}_{program_name}.png')
