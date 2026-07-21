@@ -110,12 +110,18 @@ if __name__ == '__main__':
     GRID = np.arange(GRID_LO, GRID_HI + GRID_STEP, GRID_STEP)
     KDE_BANDWIDTH = float(input("Enter bandwidth of feature grid: "))
 
+    sample_method = int(input("Enter sampling method. 1. Dual theories only 2. Whole theories\n>>"))
     min_count = int(input("Enter the minimum number of fixed points of theories to choose: "))
     n_sample = int(input("Enter the number of samples from each theories: "))
     n_iter = int(input("Enter the number of iterations for each pairs: "))
 
-    dual_sampler = dual_sampler.get_theories_above_count(min_count)
-    theories = dual_sampler.get_theory_stats().select("Name").rdd.flatMap(lambda x: x).collect()
+    sampler = None
+    if sample_method == 1:
+        sampler = dual_sampler.get_theories_above_count(min_count)
+    elif sample_method == 2:
+        sampler = theory_sampler.get_theories_above_count(min_count)
+
+    theories = sampler.get_theory_stats().select("Name").rdd.flatMap(lambda x: x).collect()
     n_theory = len(theories)
     print(f"Selected theories: {n_theory}")
     print(theories)
@@ -132,11 +138,11 @@ if __name__ == '__main__':
 
     data_per_theory = None
     if program == 1:
-        data_per_theory = build_data_sci_exp(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+        data_per_theory = build_data_sci_exp(sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
     elif program == 2:
-        data_per_theory = build_data_spectrum(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+        data_per_theory = build_data_spectrum(sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
     elif program == 3:
-        data_per_theory = build_data_sci(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+        data_per_theory = build_data_sci(sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
     elif program == 4:
         autoencoder_checkpoint = input("Enter autoencoder checkpoint file name: ")
         input_dim = len(GRID)
@@ -150,7 +156,7 @@ if __name__ == '__main__':
         checkpoint = torch.load(autoencoder_checkpoint)
         autoencoder.load_state_dict(checkpoint['model_state_dict'])
 
-        data_per_theory = main_autoencoder_clustering.build_data(dual_sampler, autoencoder, device, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+        data_per_theory = main_autoencoder_clustering.build_data(sampler, autoencoder, device, n_sample, n_iter, GRID, KDE_BANDWIDTH)
 
     def pair_calculation(theory1: str, theory2: str):
         print(f"Calculating accuracy for {theory1} and {theory2}")
