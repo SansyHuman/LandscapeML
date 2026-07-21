@@ -1,0 +1,9 @@
+Theory1,Theory2,Dual,Order
+Sp2nf5,SU2nf5,Seiberg,35
+SU3nf5,SU2nf5,Seiberg,11
+SU2nf5,Sp2nf5,Seiberg,9
+SU2nf5,SU3nf5,Seiberg,2
+SU5adj1nf4,SU3adj1nf4,Kutasov,1
+SU5adj1nf2,SU3adj1nf2,Kutasov,5
+SU3adj1nf2,SU5adj1nf2,Kutasov,7
+SU3adj1nf4,SU5adj1nf4,Kutasov,5
