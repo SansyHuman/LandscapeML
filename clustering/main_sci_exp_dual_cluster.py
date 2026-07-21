@@ -220,3 +220,24 @@ if __name__ == '__main__':
     ax.legend()
 
     plt.savefig(f'{save_dir}/{program_name}_dual_cluster_pair_acc.png')
+
+    with open(f"{save_dir}/{program_name}_dual_cluster_acc_order_per_pair_{n_theory}_theories.csv", 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["Theory1", "Theory2", "Dual", "Order"])
+        for theory1, theory2 in seiberg_pair:
+            if theory1 == theory2:
+                continue
+            if theory1 in theories_dict and theory2 in theories_dict:
+                t1 = theories_dict[theory1]
+                t2 = theories_dict[theory2]
+                rank = int(np.asarray(accuracy[t1]).argsort().argsort()[t2])
+                writer.writerow([theory1, theory2, "Seiberg", rank])
+
+        for theory1, theory2 in kutasov_pair:
+            if theory1 == theory2:
+                continue
+            if theory1 in theories_dict and theory2 in theories_dict:
+                t1 = theories_dict[theory1]
+                t2 = theories_dict[theory2]
+                rank = int(np.asarray(accuracy[t1]).argsort().argsort()[t2])
+                writer.writerow([theory1, theory2, "Kutasov", rank])
