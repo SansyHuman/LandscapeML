@@ -1,3 +1,5 @@
+import torch
+
 from clustering.main_sci_exp_cluster_pairwise import build_data_sci, build_data_sci_exp, build_data_spectrum
 from clustering.clustering_common import cluster_pair
 import datetime
@@ -9,6 +11,7 @@ import csv
 import sys
 import os
 import numpy as np
+import main_autoencoder_clustering
 
 if __name__ == '__main__':
     # os.environ["PYSPARK_PYTHON"] = "/home/subo-lee/PycharmProjects/LandscapeML/.venv/bin/python3.14t"
@@ -84,6 +87,7 @@ if __name__ == '__main__':
     print("1. SCI exponents with positive coefficients")
     print("2. Relevant operator spectrum")
     print("3. Full SCI")
+    print("4. Full SCI autoencoder")
     program = int(input(">>"))
 
     program_name = ""
@@ -93,6 +97,8 @@ if __name__ == '__main__':
         program_name = "spectrum"
     elif program == 3:
         program_name = "sci"
+    elif program == 4:
+        program_name = "autoencoder"
     else:
         print("Invalid program number")
         exit(1)
@@ -131,6 +137,20 @@ if __name__ == '__main__':
         data_per_theory = build_data_spectrum(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
     elif program == 3:
         data_per_theory = build_data_sci(dual_sampler, n_sample, n_iter, GRID, KDE_BANDWIDTH)
+    elif program == 4:
+        autoencoder_checkpoint = input("Enter autoencoder checkpoint file name: ")
+        input_dim = len(GRID)
+        latent_dim = int(input("Enter the dimension of latent space: "))
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        from unsupervised.main_sci_charge_ae import SCIAutoencoder
+        autoencoder = SCIAutoencoder(input_dim, latent_dim).to(device)
+
+        checkpoint = torch.load(autoencoder_checkpoint)
+        autoencoder.load_state_dict(checkpoint['model_state_dict'])
+
+        data_per_theory = main_autoencoder_clustering.build_data(dual_sampler, autoencoder, device, n_sample, n_iter, GRID, KDE_BANDWIDTH)
 
     def pair_calculation(theory1: str, theory2: str):
         print(f"Calculating accuracy for {theory1} and {theory2}")
