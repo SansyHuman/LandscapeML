@@ -417,7 +417,7 @@ def validate_vae(x: torch.Tensor, charge: torch.Tensor, model: SCIAutoencoder, d
         x = x.to(device)
         charge_real = charge.cpu().numpy()
 
-        x_recon, charge_pred, _ = model.forward_internal(x)
+        x_recon, charge_pred, _, _ = model.forward_internal(x)
         charge_pred = charge_pred.cpu().numpy()
 
     a_real = charge_real[:, 0].ravel()
@@ -651,10 +651,10 @@ if __name__ == "__main__":
         validation_data = validate(
             torch.tensor(input_validate[i], dtype=torch.float32),
             torch.tensor(output_validate[i], dtype=torch.float32),
-            model, device, i == 0
+            model, device, i == 0 and False
         )
 
-        if i == 0:
+        if i == 0 and False:
             validation_data.shap_values.feature_names = [f"{GRID[i]:.4f}" for i in range(len(GRID))]
             for j in range(latent_dim):
                 shap_latent = validation_data.shap_values[:,:,j]
