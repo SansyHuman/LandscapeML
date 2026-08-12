@@ -652,3 +652,49 @@ class CorrelationLoss(nn.Module):
 
         corr = numerator / denominator
         return 1 - corr.mean()
+
+
+class DeepSetsInvariant(nn.Module):
+    """
+    Invariant DeepSets module.
+    """
+    def __init__(self, input_dim: int, phi_hidden_dims: list[int],
+                 rho_hidden_dims: list[int], output_dim: int, pool_type: str="sum"):
+        """
+        Invariant DeepSets module.
+        :param input_dim: Dimension of the input data
+        :param phi_hidden_dims: Dimensions of local hidden layers
+        :param rho_hidden_dims: Dimensions of global hidden layers
+        :param output_dim: Dimension of the output data
+        :param pool_type: Pooling type. "sum", "min", "max", or "mean". Default is "sum"
+        """
+        super(DeepSetsInvariant, self).__init__()
+
+        self.phi = FullyConnectedNetwork(
+            input_dim, phi_hidden_dims[-1],
+            *list(zip(phi_hidden_dims[:-1], [nn.GELU()] * (len(phi_hidden_dims) - 1)))
+        )
+        self.lu = nn.GELU()
+        self.rho = FullyConnectedNetwork(
+            phi_hidden_dims[-1], output_dim,
+            *list(zip(rho_hidden_dims, [nn.GELU()] * len(rho_hidden_dims)))
+        )
+        self.pool = pool_type
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the DeepSetsInvariant module.
+        :param x: Tensor of batch_size * set_size * input_dim
+        :return: Data passed DeepSetsInvariant module
+        """
+        phi_x = self.lu(self.phi(x))
+        if self.pool == "sum":
+            phi_x = phi_x.sum(dim=1)
+        elif self.pool == "min":
+            phi_x = phi_x.min(dim=1).values
+        elif self.pool == "max":
+            phi_x = phi_x.max(dim=1).values
+        elif self.pool == "mean":
+            phi_x = phi_x.mean(dim=1)
+        return self.rho(phi_x)
+
