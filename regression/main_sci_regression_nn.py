@@ -128,8 +128,12 @@ if __name__ == "__main__":
 
     theory_sampler = TheorySampler(filename)
     stats = theory_sampler.get_theory_stats()
+    seeds = stats.select("Name").rdd.map(lambda row: row[0]).collect()
     for row in stats.collect():
         print(row.asDict())
+
+    train_seeds = [seeds[i] for i in range(len(seeds)) if (i + 1) % 5 != 0]
+    test_seeds = [seeds[i] for i in range(len(seeds)) if (i + 1) % 5 == 0]
 
     print("Enter the program:")
     print("1. Relevant operator spectrum")
@@ -168,12 +172,12 @@ if __name__ == "__main__":
     print("Whole data stats")
     theory_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
 
-    train_ratio = float(input("Enter train ratio: "))
-    train_sampler, test_sampler = theory_sampler.get_train_test_sets_bins(central_charge, min_charge, max_charge, n_bins, train_ratio)
-
-    print("Train data stats")
+    print(f"Train seeds: {train_seeds}")
+    train_sampler = theory_sampler.get_selected_theories(train_seeds)
     train_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
-    print("Test data stats")
+
+    print(f"Test seeds: {test_seeds}")
+    test_sampler = theory_sampler.get_selected_theories(test_seeds)
     test_sampler.get_bins_stats(central_charge, min_charge, max_charge, n_bins).show(n=n_bins, truncate=False)
 
     n_train = int(input("Enter number of training samples: "))
