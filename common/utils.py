@@ -679,15 +679,16 @@ class DeepSetsInvariant(nn.Module):
             phi_hidden_dims[-1], output_dim,
             *list(zip(rho_hidden_dims, [nn.GELU()] * len(rho_hidden_dims)))
         )
+        self.output_dim = output_dim
         self.pool = pool_type
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the DeepSetsInvariant module.
         :param x: Tensor of batch_size * set_size * input_dim
         :return: Data passed DeepSetsInvariant module
         """
-        phi_x = self.lu(self.phi(x))
+        phi_x = self.lu(self.phi(x)) * mask.unsqueeze(-1)
         if self.pool == "sum":
             phi_x = phi_x.sum(dim=1)
         elif self.pool == "min":
@@ -695,6 +696,20 @@ class DeepSetsInvariant(nn.Module):
         elif self.pool == "max":
             phi_x = phi_x.max(dim=1).values
         elif self.pool == "mean":
-            phi_x = phi_x.mean(dim=1)
+            phi_x = phi_x.sum(dim=1) / mask.sum(dim=1, keepdim=True)
         return self.rho(phi_x)
+
+
+class GenericDeepSetsDataset(Dataset):
+    def __init__(self, input, mask, output):
+        super().__init__()
+        self.x = torch.tensor(input, dtype=torch.float)
+        self.mask = torch.tensor(mask, dtype=torch.float)
+        self.y = torch.tensor(output, dtype=torch.float)
+
+    def __getitem__(self, index):
+        return self.x[index], self.mask[index], self.y[index]
+
+    def __len__(self):
+        return self.x.shape[0]
 

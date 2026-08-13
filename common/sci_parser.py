@@ -26,6 +26,8 @@ class SuperConformalIndex:
             *filter(lambda term: term.exponent('t') < 6,
                     filter(lambda term2: term2.exponent('t') is not None, self.index.terms))
         )
+        # list of [coefficient, t exponent, y exponent]
+        self.terms_list = []
         # # of marginal operators - rank of IR flavor symmetry
         self.num_dim3_minus_f = 0
         marginal_term = self.index.find_with(marginal)
@@ -52,6 +54,17 @@ class SuperConformalIndex:
         self.boson_dims: list[float] = []
         # the bosonic operator's dimensions and coefficient of the sci terms
         self.boson_spectrum: dict[float, int] = dict()
+
+        for term in self.index.terms:
+            coeff = term.coefficient
+            t_exp = term.exponent('t')
+            y_exp = term.exponent('y')
+            if t_exp is None:
+                t_exp = 0
+            if y_exp is None:
+                y_exp = 0
+
+            self.terms_list.append([coeff, t_exp, y_exp])
 
         terms_spectrum = self.index.find_with(spectral)
         tmp_dims = set()
