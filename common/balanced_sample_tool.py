@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import math
 import pyspark.sql.dataframe as ps
 
-from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins, train_test_bins
+from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins, train_test_bins, \
+    balanced_gauge_sample
 
 
 class TheorySampler:
@@ -99,6 +100,10 @@ class TheorySampler:
         bucket_summary = bucket_counts.join(ranges_df, on="bucket", how="inner")
         return bucket_summary
 
+    def get_gauge_group_stats(self) -> ps.DataFrame:
+        df_with_letter = self.df.withColumn("GaugeClass", F.substring(F.col("GaugeGroup"), 1, 1))
+        return df_with_letter.groupBy("GaugeClass").count().orderBy("GaugeClass")
+
     def get_balanced_sample(self, a_range: tuple[float, float], c_range: tuple[float, float],
                             n_per_theory: int) -> Self:
         sample = TheorySampler()
@@ -168,6 +173,16 @@ class TheorySampler:
         train.df, test.df = train_test_bins(self.df, charge_col, min_charge, max_charge, n_bins, train_ratio)
 
         return train, test
+
+    def get_balanced_gauge_sample(self, n_per_class: int) -> Self:
+        sample = TheorySampler()
+        sample.filename = self.filename
+        sample.spark = self.spark
+
+        assert self.df is not None
+        sample.df = balanced_gauge_sample(self.df, n_per_class)
+
+        return sample
 
     def get_theory_num(self) -> int:
         return self.df.select("Name").distinct().count()

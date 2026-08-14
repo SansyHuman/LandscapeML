@@ -582,6 +582,19 @@ def train_test_bins(df: ps.DataFrame, charge_col: str, min_charge: float, max_ch
     return train_df.drop("bucket"), test_df.drop("bucket")
 
 
+def balanced_gauge_sample(df: ps.DataFrame, n_per_class: int):
+    """
+    Gets balanced sample from each ade class.
+    """
+    df_with_letter = df.withColumn("GaugeClass", F.substring(F.col("GaugeGroup"), 1, 1))
+    w = Window.partitionBy("GaugeClass").orderBy(F.rand())
+    ranked = df_with_letter.withColumn("rank", F.row_number().over(w))
+
+    sampled = ranked.filter(F.col("rank") <= n_per_class)
+
+    return sampled.drop("GaugeClass", "rank")
+
+
 def kernel_density_estimation(data: np.ndarray, grid: np.ndarray, kde_bandwidth: float, normalize=True) -> np.ndarray:
     """
     Gets the kernel density estimation of the data
