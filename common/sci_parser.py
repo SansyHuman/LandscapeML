@@ -1,14 +1,12 @@
 from common.utils import *
 
-import networkx as nx
 from torch_geometric.data import Data
-from torch_geometric.utils import from_networkx
 import numpy as np
+import sympy as sp
+import torch
 
-marginal = Monomial('t', 6)
-spectral = Monomial('y', 0)
-fermionic = Monomial('y', 1)
-bosonic = Monomial('y', 2)
+
+t, y = sp.symbols("t y")
 
 
 class SuperConformalIndex:
@@ -16,140 +14,90 @@ class SuperConformalIndex:
     Class which contains the information of a superconformal index.
     """
     def __init__(self, index: str) -> None:
+        """Parse a reduced, unrefined index with integer coefficients.
+
+        The input must be a finite sum of t**a * y**b, with rational a and
+        integer b. Spectra retain signed index contributions. For scalar
+        chiral primaries, a / 2 is the scaling dimension; this interpretation
+        does not apply to every multiplet contributing to the index.
         """
-        Converts the index string into a polynomial object and parses information.
-        :param index: index string.
-        """
-        self.index = to_poly(index)
-        # terms with exponent of t less than 6
-        self.short_index = Polynomial(
-            *filter(lambda term: term.exponent('t') < 6,
-                    filter(lambda term2: term2.exponent('t') is not None, self.index.terms))
-        )
-        # list of [coefficient, t exponent, y exponent]
+        self.index = sp.expand(sp.sympify(
+            index,
+            locals={"t": t, "y": y},
+            rational=True,
+            convert_xor=True
+        ))
         self.terms_list = []
-        # # of marginal operators - rank of IR flavor symmetry
-        self.num_dim3_minus_f = 0
-        marginal_term = self.index.find_with(marginal)
-        if len(marginal_term) > 0:
-            self.num_dim3_minus_f = round(self.index.find_with(marginal)[0].coefficient)
+        short_terms = []
+        for term in sp.Add.make_args(self.index):
+            if term == 0:
+                continue
+            coeff, monomial = term.as_coeff_Mul()
+            powers = monomial.as_powers_dict()
+            t_exp = powers.get(t, sp.S.Zero)
+            y_exp = powers.get(y, sp.S.Zero)
+            if (coeff.is_Integer is not True
+                    or t_exp.is_Rational is not True
+                    or y_exp.is_Integer is not True
+                    or monomial != t**t_exp * y**y_exp):
+                raise ValueError(f"Unsupported index term: {term}")
+            self.terms_list.append([int(coeff), float(t_exp), float(y_exp)])
+            if t_exp < 6:
+                short_terms.append(term)
 
-        # dimensions of scalar operators in the order of increasing
-        self.dims: list[float] = []
-        # the scalar operator's dimensions and coefficient of the sci terms
-        self.spectrum: dict[float, int] = dict()
-        # dimensions of relevant scalar operators in the order of increasing
-        self.relevant_dims: list[float] = []
-        # the number of relevant scalar operators with each dimensions
-        self.relevant_spectrum: dict[float, int] = dict()
-        # total number of relevant operators
-        self.num_relevant_ops = 0
+        self.terms_list.sort(key=lambda row: (row[1], row[2]))
+        self.short_index = sp.Add(*short_terms)
+        # Marginal operators minus the dimension of the IR flavor symmetry.
+        self.num_dim3_minus_f = int(self.index.coeff(y, 0).coeff(t, 6))
 
-        # dimensions of fermionic operators in the order of increasing
-        self.fermion_dims: list[float] = []
-        # the fermionic operator's dimensions and minus coefficient(since (-1)^F is -1) of the sci terms
-        self.fermion_spectrum: dict[float, int] = dict()
+        # In an SU(2) character expansion, the spin-j coefficient is
+        # [y**(2*j)] I - [y**(2*j+2)] I. Subtract before extracting powers of t:
+        # the first coefficient may vanish even when the difference is nonzero.
+        scalar = self._extract_spectrum(
+            self.index.coeff(y, 0) - self.index.coeff(y, 2)
+        )
+        fermion = self._extract_spectrum(
+            -self.index.coeff(y, 1) + self.index.coeff(y, 3)
+        )
+        boson = self._extract_spectrum(
+            self.index.coeff(y, 2) - self.index.coeff(y, 4)
+        )
 
-        # dimensions of bosonic operators in the order of increasing
-        self.boson_dims: list[float] = []
-        # the bosonic operator's dimensions and coefficient of the sci terms
-        self.boson_spectrum: dict[float, int] = dict()
+        # Keep exact dimensions through subtraction and cutoff comparisons;
+        # public fields retain their existing Python float/int representation.
+        self.spectrum = {float(dim): cnt for dim, cnt in scalar.items()}
+        self.dims = [
+            float(dim) for dim, cnt in scalar.items()
+            if dim <= 3 or cnt > 0
+        ]
+        self.relevant_spectrum = {
+            float(dim): cnt for dim, cnt in scalar.items() if dim < 3
+        }
+        self.relevant_dims = list(self.relevant_spectrum)
+        self.num_relevant_ops = sum(self.relevant_spectrum.values())
+        self.smallest_dim = min(self.dims, default=None)
 
-        for term in self.index.terms:
-            coeff = term.coefficient
-            t_exp = term.exponent('t')
-            y_exp = term.exponent('y')
-            if t_exp is None:
-                t_exp = 0
-            if y_exp is None:
-                y_exp = 0
+        # These fields select spin 1/2 and spin 1, respectively. Their keys
+        # are half the t exponent, not universally the primary's dimension.
+        self.fermion_spectrum = {float(dim): cnt for dim, cnt in fermion.items()}
+        self.fermion_dims = list(self.fermion_spectrum)
+        self.boson_spectrum = {float(dim): cnt for dim, cnt in boson.items()}
+        self.boson_dims = list(self.boson_spectrum)
 
-            self.terms_list.append([coeff, t_exp, y_exp])
-
-        terms_spectrum = self.index.find_with(spectral)
-        tmp_dims = set()
-        for term in terms_spectrum:
-            dim = term.exponent('t')
-            if dim is not None:
-                dim = dim / 2.0 # t^3R, dim = 3R/2
-                cnt = round(term.coefficient)
-
-                if dim in self.spectrum:
-                    self.spectrum[dim] += cnt
-                else:
-                    self.spectrum[dim] = cnt
-
-                if dim < 3.0: # relevant
-                    if dim in self.relevant_spectrum:
-                        self.relevant_spectrum[dim] += cnt
-                    else:
-                        self.relevant_dims.append(dim)
-                        self.relevant_spectrum[dim] = cnt
-                    self.num_relevant_ops += cnt
-                elif dim > 3.0: # irrelevant
-                    if cnt < 0: # ignore terms with negative coefficients
-                        continue
-
-                tmp_dims.add(dim)
-
-        self.dims = list(tmp_dims)
-        self.dims.sort()
-        self.relevant_dims.sort()
-        # smallest dimension among all operators
-        self.smallest_dim = self.dims[0]
-
-        terms_fermionic = self.index.find_with(fermionic)
-        tmp_dims = set()
-        for term in terms_fermionic:
-            dim = term.exponent('t')
-            if dim is not None:
-                dim = dim / 2.0 # TODO: is j1 always zero?
-                cnt = -round(term.coefficient)
-
-                if dim in self.fermion_spectrum:
-                    self.fermion_spectrum[dim] += cnt
-                else:
-                    self.fermion_spectrum[dim] = cnt
-
-                tmp_dims.add(dim)
-
-        self.fermion_dims = list(tmp_dims)
-        self.fermion_dims.sort()
-
-        terms_bosonic = self.index.find_with(bosonic)
-        tmp_dims = set()
-        for term in terms_bosonic:
-            dim = term.exponent('t')
-            if dim is not None:
-                dim = dim / 2.0
-                cnt = round(term.coefficient)
-
-                # For j2=1 adjoint rep, spin-0 operator is counted as scalar in spectral terms. Should be removed.
-                if dim in self.spectrum:
-                    self.spectrum[dim] -= cnt
-                    if self.spectrum[dim] == 0:
-                        del self.spectrum[dim]
-                        if dim in self.dims:
-                            self.dims.remove(dim)
-
-                if dim < 3.0: # relevant
-                    if dim in self.relevant_spectrum:
-                        self.relevant_spectrum[dim] -= cnt
-                        if self.relevant_spectrum[dim] == 0:
-                            del self.relevant_spectrum[dim]
-                            if dim in self.relevant_dims:
-                                self.relevant_dims.remove(dim)
-                        self.num_relevant_ops -= cnt
-
-                if dim in self.boson_spectrum:
-                    self.boson_spectrum[dim] += cnt
-                else:
-                    self.boson_spectrum[dim] = cnt
-
-                tmp_dims.add(dim)
-
-        self.boson_dims = list(tmp_dims)
-        self.boson_dims.sort()
+    @staticmethod
+    def _extract_spectrum(expr: sp.Expr) -> dict[sp.Rational, int]:
+        """Collect signed coefficients by exact half-exponent, excluding t**0."""
+        spectrum = {}
+        for term in sp.Add.make_args(sp.expand(expr)):
+            if term == 0:
+                continue
+            coeff, exponent = term.as_coeff_exponent(t)
+            # The identity is not an operator counted in the reduced spectrum.
+            if exponent == 0:
+                continue
+            dim = exponent / 2
+            spectrum[dim] = spectrum.get(dim, 0) + int(coeff)
+        return {dim: cnt for dim, cnt in sorted(spectrum.items()) if cnt != 0}
 
     def featurize_dimensions(self, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
         """
@@ -292,19 +240,28 @@ class SuperConformalIndex:
         return np.concatenate([kde, gap_feat, summary])
 
     def featurize_sci_graph(self, min_dim: float, max_dim: float) -> Data:
-        terms_sorted = sorted(self.terms_list, key=lambda x: x[1])
+        """Build a chain using terms with min_dim <= t exponent / 2 <= max_dim.
 
-        graph = nx.Graph()
-        graph.add_nodes_from(
-            [
-                (i, {"coeff": terms_sorted[i][0], "t_exp": terms_sorted[i][1], "y_exp": terms_sorted[i][2]}) for i in range(len(terms_sorted))
-            ]
-        )
-        for i in range(len(terms_sorted) - 1):
-            graph.add_edge(i, i + 1, delta=(terms_sorted[i + 1][1] - terms_sorted[i][1]) / 2.0)
+        Nodes contain [coefficient, t exponent, y exponent]. Each adjacent
+        pair has edges in both directions, with the nonnegative gap between
+        half-exponents as its edge attribute. Empty selections are supported.
+        """
+        if min_dim > max_dim:
+            raise ValueError("min_dim must not exceed max_dim")
+        terms = [
+            row for row in self.terms_list
+            if min_dim <= row[1] / 2 <= max_dim
+        ]
+        edges = []
+        gaps = []
+        for i in range(len(terms) - 1):
+            edges.extend([(i, i + 1), (i + 1, i)])
+            gap = (terms[i + 1][1] - terms[i][1]) / 2
+            gaps.extend([gap, gap])
 
-        return from_networkx(
-            graph,
-            group_node_attrs=["coeff", "t_exp", "y_exp"],
-            group_edge_attrs=["delta"]
+        return Data(
+            x=torch.tensor(terms, dtype=torch.float32).reshape(-1, 3),
+            edge_index=torch.tensor(edges, dtype=torch.long).reshape(-1, 2).t().contiguous(),
+            edge_attr=torch.tensor(gaps, dtype=torch.float32).reshape(-1, 1),
+            num_nodes=len(terms),
         )
