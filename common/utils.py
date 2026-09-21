@@ -544,6 +544,16 @@ def balanced_sample_bins(df: ps.DataFrame, charge_col: str, min_charge: float, m
     return sampled.drop("rank", "bucket")
 
 
+def train_test_random(df: ps.DataFrame, train_ratio: float):
+    """
+    Divide data into train and test sets.
+    """
+    assert 0 <= train_ratio <= 1
+
+    test_ratio = 1.0 - train_ratio
+    return df.randomSplit([train_ratio, test_ratio])
+
+
 def train_test_bins(df: ps.DataFrame, charge_col: str, min_charge: float, max_charge: float, n_bins: int, train_ratio: float):
     """
     Divide data into train and test sets where the ratio of train set is equal in all bins of charges.
@@ -587,6 +597,7 @@ def balanced_gauge_sample(df: ps.DataFrame, n_per_class: int):
     Gets balanced sample from each ade class.
     """
     df_with_letter = df.withColumn("GaugeClass", F.substring(F.col("GaugeGroup"), 1, 1))
+    df_with_letter = df_with_letter.filter(F.col("GaugeClass").isin(["A", "B", "C", "D", "E", "F", "G"]))
     w = Window.partitionBy("GaugeClass").orderBy(F.rand())
     ranked = df_with_letter.withColumn("rank", F.row_number().over(w))
 

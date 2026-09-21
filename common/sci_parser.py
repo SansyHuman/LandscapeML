@@ -292,23 +292,19 @@ class SuperConformalIndex:
         return np.concatenate([kde, gap_feat, summary])
 
     def featurize_sci_graph(self, min_dim: float, max_dim: float) -> Data:
-        dims_sorted = []
-        for dim in self.spectrum.keys():
-            if min_dim <= dim <= max_dim:
-                dims_sorted.append(dim)
-        dims_sorted.sort()
+        terms_sorted = sorted(self.terms_list, key=lambda x: x[1])
 
         graph = nx.Graph()
         graph.add_nodes_from(
             [
-                (dim, {"dim": dim, "coeff": self.spectrum[dim]}) for dim in dims_sorted
+                (i, {"coeff": terms_sorted[i][0], "t_exp": terms_sorted[i][1], "y_exp": terms_sorted[i][2]}) for i in range(len(terms_sorted))
             ]
         )
-        for i in range(len(dims_sorted) - 1):
-            graph.add_edge(dims_sorted[i], dims_sorted[i + 1], delta=dims_sorted[i + 1] - dims_sorted[i])
+        for i in range(len(terms_sorted) - 1):
+            graph.add_edge(i, i + 1, delta=(terms_sorted[i + 1][1] - terms_sorted[i][1]) / 2.0)
 
         return from_networkx(
             graph,
-            group_node_attrs=["dim", "coeff"],
+            group_node_attrs=["coeff", "t_exp", "y_exp"],
             group_edge_attrs=["delta"]
         )

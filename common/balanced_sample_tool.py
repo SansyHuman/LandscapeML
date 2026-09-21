@@ -9,7 +9,7 @@ import math
 import pyspark.sql.dataframe as ps
 
 from common.utils import balanced_sample_theories, manual_sample_theories, balanced_sample_bins, train_test_bins, \
-    balanced_gauge_sample
+    balanced_gauge_sample, train_test_random
 
 
 class TheorySampler:
@@ -160,6 +160,19 @@ class TheorySampler:
         sample.df = balanced_sample_bins(self.df, charge_col, min_charge, max_charge, n_bins, n_per_bins)
 
         return sample
+
+    def get_train_test_sets_random(self, train_ratio: float) -> tuple[Self, Self]:
+        train = TheorySampler()
+        test = TheorySampler()
+        train.filename = self.filename
+        test.filename = self.filename
+        train.spark = self.spark
+        test.spark = self.spark
+
+        assert self.df is not None
+        train.df, test.df = train_test_random(self.df, train_ratio)
+
+        return train, test
 
     def get_train_test_sets_bins(self, charge_col: str, min_charge: float, max_charge: float, n_bins: int, train_ratio: float) -> tuple[Self, Self]:
         train = TheorySampler()
