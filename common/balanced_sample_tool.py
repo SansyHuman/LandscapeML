@@ -1,4 +1,5 @@
 from typing import Union, Self
+import multiprocessing
 
 from pyspark.ml.feature import Bucketizer
 from pyspark.sql import SparkSession
@@ -19,7 +20,12 @@ class TheorySampler:
     def __init__(self, filename: Union[str, None]=None):
         if filename is not None:
             self.filename = filename
-            self.spark = SparkSession.builder.appName("CSVLoader").config("spark.driver.memory", "32g").config("spark.executor.memory", "32g").getOrCreate()
+            self.spark = (SparkSession.builder.master(f"local[{multiprocessing.cpu_count()}]")
+                          .appName("CSVLoader")
+                          .config("spark.driver.memory", "32g")
+                          .config("spark.executor.memory", "32g")
+                          .getOrCreate()
+                          )
             self.df = self.spark.read.csv(
                 filename,
                 header=True,  # use first row as column names

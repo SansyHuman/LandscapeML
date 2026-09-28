@@ -1,10 +1,15 @@
 """Model definition for spectrum completion with signed coefficients; no training loop."""
 
 import math
+import datetime
 from typing import Any
 import sys
 import os
 import csv
+import multiprocessing
+import tempfile
+import warnings
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -19,6 +24,7 @@ import pyspark.sql.dataframe as ps
 
 from common.balanced_sample_tool import TheorySampler
 from common.sci_parser import SuperConformalIndex
+from common.utils import ROCmSafeLayerNorm
 
 
 def build_data(
@@ -58,23 +64,30 @@ def build_data(
     train_df, test_df, valid_df = sampler.df.randomSplit([train_ratio, test_ratio, valid_ratio], seed=seed)
 
     def build_dataset(df: ps.DataFrame, dataset: list[Any]):
-        rows = df.collect()
+        def parse_partition(rows):
+            for row in rows:
+                lower_spec = []  # list of [dimension, coefficient]
+                higher_spec = []
 
-        for row in rows:
-            lower_spec = []  # list of [dimension, coefficient]
-            higher_spec = []
+                sci = SuperConformalIndex(row["SCI"])
+                for dim in sorted(sci.spectrum.keys()):
+                    if dim <= lower_cutoff:
+                        lower_spec.append([dim, sci.spectrum[dim]])
+                    elif dim <= higher_cutoff:
+                        higher_spec.append([dim, sci.spectrum[dim]])
 
-            sci = SuperConformalIndex(row["SCI"])
-            print(i)
-            for dim in sorted(sci.spectrum.keys()):
-                if dim <= lower_cutoff:
-                    lower_spec.append([dim, sci.spectrum[dim]])
-                elif dim <= higher_cutoff:
-                    higher_spec.append([dim, sci.spectrum[dim]])
+                if lower_spec:
+                    yield lower_spec, higher_spec
 
-            if not lower_spec:
-                continue
+        pairs = (
+            df.select("SCI")
+            .repartition(multiprocessing.cpu_count())
+            .rdd
+            .mapPartitions(parse_partition)
+            .collect()
+        )
 
+        for lower_spec, higher_spec in pairs:
             dataset[0].append(lower_spec)
             dataset[1].append(higher_spec)
 
@@ -104,8 +117,8 @@ class SpectrumPredictDataset(Dataset):
         xs, ys = [], []
 
         for x_i, y_i in batch:
-            x_i = torch.as_tensor(x_i, dtype=torch.float64)
-            y_i = torch.as_tensor(y_i, dtype=torch.float64)
+            x_i = torch.as_tensor(x_i, dtype=torch.float32)
+            y_i = torch.as_tensor(y_i, dtype=torch.float32)
 
             if y_i.numel() == 0:
                 y_i = y_i.reshape(0, 2)
@@ -200,7 +213,7 @@ class HigherSpectrumPredictModel(nn.Module):
         num_gap_components: int = 5,
         input_cutoff: float = 2.25,
         output_cutoff: float = 4.5,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         sizes = (d_model, nhead, num_encoder_layers, num_decoder_layers,
@@ -255,6 +268,20 @@ class HigherSpectrumPredictModel(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, 5),
         )
+
+        # Transformer layers construct their own LayerNorms. Replace those as
+        # well as the final norms, reusing parameters for checkpoint compatibility.
+        for module in tuple(self.modules()):
+            for name, child in tuple(module.named_children()):
+                if isinstance(child, nn.LayerNorm):
+                    replacement = ROCmSafeLayerNorm(
+                        child.normalized_shape, eps=child.eps,
+                        elementwise_affine=child.elementwise_affine,
+                        bias=child.bias is not None,
+                    )
+                    replacement.weight = child.weight
+                    replacement.bias = child.bias
+                    setattr(module, name, replacement)
 
         # PyTorch clones the prototype layers; initialize each clone separately.
         self.apply(self._initialize)
@@ -810,28 +837,141 @@ def spectrum_error(y_true, y_pred, tolerance=1e-3):
     }
 
 
+@torch.no_grad()
+def _clip_training_gradients(model: nn.Module, max_norm: float = 1.0) -> torch.Tensor:
+    """Keep the normal fast path, with a float64 fallback for norm overflow."""
+    parameters = [p for p in model.parameters() if p.grad is not None]
+    try:
+        return torch.nn.utils.clip_grad_norm_(
+            parameters, max_norm=max_norm, error_if_nonfinite=True,
+        )
+    except RuntimeError as error:
+        # clip_grad_norm_ checks the norm before changing any gradients.
+        if "is non-finite" not in str(error):
+            raise
+
+        # Inspect on CPU as well, to distinguish bad entries from a GPU
+        # reduction problem. This slower path runs only when clipping fails.
+        gradients = [
+            (name, p.grad, p.grad.detach().to(device="cpu", dtype=torch.float64))
+            for name, p in model.named_parameters() if p.grad is not None
+        ]
+        bad = [
+            f"{name}: NaN={int(g.isnan().sum())}, Inf={int(g.isinf().sum())}"
+            for name, _, g in gradients if not torch.isfinite(g).all()
+        ]
+        if bad:
+            raise FloatingPointError(
+                "Non-finite gradient entries; optimizer update cancelled. "
+                + "; ".join(bad)
+            ) from error
+
+        norm = torch.linalg.vector_norm(torch.stack([
+            torch.linalg.vector_norm(g) for _, _, g in gradients
+        ]))
+        if not torch.isfinite(norm):
+            raise FloatingPointError(
+                "Gradient norm is non-finite even in float64; optimizer update cancelled."
+            ) from error
+
+        scale = (max_norm / (norm + 1e-6)).clamp(max=1.0)
+        for _, destination, g in gradients:
+            # Scale before converting back, avoiding an underflowing float32
+            # scale factor when the original finite gradients are very large.
+            destination.copy_(g * scale)
+        warnings.warn(
+            f"Gradient entries were finite, but the original norm calculation "
+            f"failed. Clipped using CPU float64 norm {norm.item():.6g}.",
+            RuntimeWarning, stacklevel=2,
+        )
+        return norm
+
+
+def _save_gradient_failure(model, batch, parts, batch_index, c, rng_state) -> Path:
+    """Save one backward-pass reproducer, separate from training checkpoints."""
+    directory = Path(__file__).resolve().parents[1] / "data" / "predict" / "debug"
+    directory.mkdir(parents=True, exist_ok=True)
+    encoder_layer = model.encoder.layers[0]
+    state = {
+        "model_config": {
+            "d_model": model.d_model,
+            "nhead": encoder_layer.self_attn.num_heads,
+            "num_encoder_layers": len(model.encoder.layers),
+            "num_decoder_layers": len(model.decoder.layers),
+            "dim_feedforward": encoder_layer.linear1.out_features,
+            "dropout": encoder_layer.dropout.p,
+            "num_gap_components": model.num_gap_components,
+            "input_cutoff": model.input_cutoff,
+            "output_cutoff": model.output_cutoff,
+            "dtype": model.bos.dtype,
+        },
+        "model_state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+        "gradients": {k: p.grad.detach().cpu() for k, p in model.named_parameters() if p.grad is not None},
+        "batch": tuple(t.detach().cpu() for t in batch),
+        "loss_parts": {k: v.detach().cpu() for k, v in parts.items()},
+        "batch_index": batch_index,
+        "l1_coefficient": c,
+        "rng_state": rng_state,
+        "torch_version": str(torch.__version__),
+        "device": str(model.bos.device),
+    }
+    with tempfile.NamedTemporaryFile(
+        prefix="nonfinite-gradient-", suffix=".pt", dir=directory, delete=False,
+    ) as snapshot:
+        torch.save(state, snapshot)
+        return Path(snapshot.name)
+
+
 def train(loader: DataLoader, model: HigherSpectrumPredictModel, optimizer: Optimizer, device: torch.device, c: float=0.001):
     model.train()
 
+    i = 1
     for x, y_true, src_pad, tgt_pad in loader:
+        print(f"Train batch {i} training...")
         x = x.to(device)
         y_true = y_true.to(device)
         src_pad = src_pad.to(device)
         tgt_pad = tgt_pad.to(device)
 
-        loss, _ = spectrum_loss(model, x, y_true, src_pad, tgt_pad)
-        l1_norm = sum(p.abs().sum() for p in model.parameters())
-        loss += c * l1_norm
+        optimizer.zero_grad(set_to_none=True)
+        rng_state = {
+            "cpu": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state(x.device) if x.is_cuda else None,
+        }
 
-        optimizer.zero_grad()
-        loss.backward()
+        with torch.autograd.detect_anomaly(check_nan=True):
+            loss, parts = spectrum_loss(model, x, y_true, src_pad, tgt_pad)
+            l1_norm = sum(p.abs().sum() for p in model.parameters())
+            loss += c * l1_norm
+
+            if not torch.isfinite(loss).item():
+                values = {
+                    name: value.detach().item()
+                    for name, value in parts.items()
+                }
+                raise FloatingPointError(f"Non-finite loss in batch {i}: {values}")
+
+            loss.backward()
+
+        try:
+            _clip_training_gradients(model, max_norm=1.0)
+        except FloatingPointError as error:
+            path = _save_gradient_failure(
+                model, (x, y_true, src_pad, tgt_pad), parts, i, c, rng_state,
+            )
+            raise FloatingPointError(f"{error}\nReproducer saved to {path}") from error
+
         optimizer.step()
+        i += 1
 
 
-def test(loader: DataLoader, model: HigherSpectrumPredictModel, device: torch.device):
+def test(loader: DataLoader, model: HigherSpectrumPredictModel, device: torch.device, *, generate_prediction: bool = False):
     model.eval()
 
     results = []
+
+    total_loss = 0.0
+    total_num = 0
 
     with torch.no_grad():
         for x, y_true, src_pad, tgt_pad in loader:
@@ -840,37 +980,50 @@ def test(loader: DataLoader, model: HigherSpectrumPredictModel, device: torch.de
             src_pad = src_pad.to(device)
             tgt_pad = tgt_pad.to(device)
 
-            y_pred, pred_lengths, reasons = predict_batch(model, x, src_pad=src_pad, sample=False)
+            test_loss, _ = spectrum_loss(model, x, y_true, src_pad, tgt_pad)
+            total_loss += test_loss * x.size(0)
+            total_num += x.size(0)
 
-            for i in range(x.size(0)):
-                true_yi = y_true[i, ~tgt_pad[i]].detach().cpu().numpy()
-                pred_yi = y_pred[i, :pred_lengths[i].item()].detach().cpu().numpy()
+            if generate_prediction:
+                y_pred, pred_lengths, reasons = predict_batch(model, x, src_pad=src_pad, sample=False)
 
-                metrics = spectrum_error(true_yi, pred_yi)
-                metrics["termination"] = reasons[i]
-                results.append(metrics)
+                for i in range(x.size(0)):
+                    true_yi = y_true[i, ~tgt_pad[i]].detach().cpu().numpy()
+                    pred_yi = y_pred[i, :pred_lengths[i].item()].detach().cpu().numpy()
+
+                    metrics = spectrum_error(true_yi, pred_yi)
+                    metrics["termination"] = reasons[i]
+                    results.append(metrics)
+            else:
+                results.append({})
 
     if not results:
         raise ValueError("The test loader contains no theories.")
 
-    matched = sum(metric["matched"] for metric in results)
-    extra = sum(metric["extra"] for metric in results)
-    missing = sum(metric["missing"] for metric in results)
-
-    n_true = matched + missing
-    n_pred = matched + extra
-
     total: dict[str, int | float | None] = {
         "num_theories": len(results),
-        "matched": matched,
-        "extra": extra,
-        "missing": missing,
-        "precision": matched / n_pred if n_pred else float(n_true == 0),
-        "recall": matched / n_true if n_true else 1.0,
-        "f1": 2 * matched / (n_true + n_pred) if n_true + n_pred else 1.0,
+        "loss": total_loss / total_num if total_num else 0.0,
     }
-    for key in ("dimension_mae", "coefficient_mae", "coefficient_acc", "sign_acc"):
-        total[key] = sum(metric["matched"] * metric[key] for metric in results if metric[key] is not None) / matched if matched > 0 else None
+
+    if generate_prediction:
+        matched = sum(metric["matched"] for metric in results)
+        extra = sum(metric["extra"] for metric in results)
+        missing = sum(metric["missing"] for metric in results)
+
+        n_true = matched + missing
+        n_pred = matched + extra
+
+        total |= {
+            "matched": matched,
+            "extra": extra,
+            "missing": missing,
+            "precision": matched / n_pred if n_pred else float(n_true == 0),
+            "recall": matched / n_true if n_true else 1.0,
+            "f1": 2 * matched / (n_true + n_pred) if n_true + n_pred else 1.0,
+            "loss": total_loss / total_num if total_num else 0.0,
+        }
+        for key in ("dimension_mae", "coefficient_mae", "coefficient_acc", "sign_acc"):
+            total[key] = sum(metric["matched"] * metric[key] for metric in results if metric[key] is not None) / matched if matched > 0 else None
 
     return total
 
@@ -878,7 +1031,7 @@ if __name__ == "__main__":
     print(sys.version)
     print("GIL enabled:", sys._is_gil_enabled())
 
-    os.makedirs('../data/regression', exist_ok=True)
+    os.makedirs('../data/predict', exist_ok=True)
     csv.field_size_limit(np.iinfo(np.int32).max)
 
     filename = input("Enter file name to load: ")
@@ -904,13 +1057,69 @@ if __name__ == "__main__":
     dataset_test = SpectrumPredictDataset(test_set[0], test_set[1])
     dataset_validation = SpectrumPredictDataset(validation_set[0], validation_set[1])
 
-    dataloader_train = DataLoader(dataset_train, batch_size=32, shuffle=True, collate_fn=SpectrumPredictDataset.collate_spectra)
-    dataloader_test = DataLoader(dataset_test, batch_size=32, shuffle=False, collate_fn=SpectrumPredictDataset.collate_spectra)
-    dataloader_validation = DataLoader(dataset_validation, batch_size=32, shuffle=False, collate_fn=SpectrumPredictDataset.collate_spectra)
+    dataloader_train = DataLoader(dataset_train, batch_size=64, shuffle=True, collate_fn=SpectrumPredictDataset.collate_spectra)
+    dataloader_test = DataLoader(dataset_test, batch_size=64, shuffle=False, collate_fn=SpectrumPredictDataset.collate_spectra)
+    dataloader_validation = DataLoader(dataset_validation, batch_size=64, shuffle=False, collate_fn=SpectrumPredictDataset.collate_spectra)
 
     for index, (x, y_true, src_pad, tgt_pad) in enumerate(dataloader_train):
-        print(f"{index}/{len(dataloader_train)}", end=" ")
+        print(f"{index + 1}/{len(dataloader_train)}", end=" ")
         print('x shape: ', x.shape, end=' ')
         print('y_true shape: ', y_true.shape, end=' ')
         print('src_pad shape: ', src_pad.shape, end=' ')
         print('tgt_pad shape: ', tgt_pad.shape)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = HigherSpectrumPredictModel(input_cutoff=lower_cutoff, output_cutoff=higher_cutoff).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    best_loss = 1e10
+
+    n_epochs = int(input("Enter number of epochs: "))
+    checkpoint_path = input("Enter the name of the checkpoint file: ")
+
+    file_suffix = f"{gauge_group}_{lower_cutoff}_{higher_cutoff}"
+    if os.path.isfile(checkpoint_path):
+        print('Checkpoint available. Loads checkpoint...')
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        best_loss = checkpoint['best_loss']
+
+    for epoch in range(n_epochs):
+        print(f"Train epoch {epoch + 1}...")
+        train(dataloader_train, model, optimizer, device)
+
+        print(f"Test epoch {epoch + 1}...")
+        total = test(dataloader_test, model, device, generate_prediction=(epoch + 1) % 5 == 0)
+
+        print(f"Epoch {epoch + 1}/{n_epochs}")
+        for k, v in total.items():
+            print(f"{k}: {v}")
+        print()
+
+        if total["loss"] < best_loss:
+            best_loss = total["loss"]
+            print("New best loss obtained. Saving model...")
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_loss": best_loss
+            }, checkpoint_path)
+
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    best_loss = checkpoint['best_loss']
+
+    print("Validating best model...")
+    total = test(dataloader_validation, model, device, generate_prediction=True)
+    for k, v in total.items():
+        print(f"{k}: {v}")
+
+    save_dir = f"../data/predict/{datetime.datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    with open(f"{save_dir}/higher_spectrum_predict_{file_suffix}.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        for key in sorted(total.keys()):
+            writer.writerow([key, str(total[key])])

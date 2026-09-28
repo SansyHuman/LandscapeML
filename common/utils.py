@@ -518,3 +518,21 @@ class GenericDeepSetsDataset(Dataset):
     def __len__(self):
         return self.x.shape[0]
 
+
+class ROCmSafeLayerNorm(nn.LayerNorm):
+    """Avoid the faulty fused affine-gradient kernel on AMD RDNA GPUs.
+
+    See https://github.com/pytorch/pytorch/issues/183861. Keeping the
+    normalization and affine operations separate preserves LayerNorm's
+    definition and parameter names while avoiding that backward kernel.
+    """
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if torch.version.hip is None or not input.is_cuda:
+            return super().forward(input)
+        normalized = torch.nn.functional.layer_norm(input, self.normalized_shape, None, None, self.eps)
+        if self.weight is not None:
+            normalized = normalized * self.weight
+        if self.bias is not None:
+            normalized = normalized + self.bias
+        return normalized
