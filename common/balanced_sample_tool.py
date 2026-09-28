@@ -100,9 +100,12 @@ class TheorySampler:
         bucket_summary = bucket_counts.join(ranges_df, on="bucket", how="inner")
         return bucket_summary
 
-    def get_gauge_group_stats(self) -> ps.DataFrame:
+    def get_gauge_class_stats(self) -> ps.DataFrame:
         df_with_letter = self.df.withColumn("GaugeClass", F.substring(F.col("GaugeGroup"), 1, 1))
         return df_with_letter.groupBy("GaugeClass").count().orderBy("GaugeClass")
+
+    def get_gauge_group_stats(self) -> ps.DataFrame:
+        return self.df.groupBy("GaugeGroup").count().orderBy(F.col("count").desc())
 
     def get_balanced_sample(self, a_range: tuple[float, float], c_range: tuple[float, float],
                             n_per_theory: int) -> Self:
@@ -148,6 +151,16 @@ class TheorySampler:
 
         assert self.df is not None
         sample.df = self.df.filter(F.col("Name").isin(theories))
+
+        return sample
+
+    def get_selected_gauge_groups(self, gauge_groups: list[str]) -> Self:
+        sample = TheorySampler()
+        sample.filename = self.filename
+        sample.spark = self.spark
+
+        assert self.df is not None
+        sample.df = self.df.filter(F.col("GaugeGroup").isin(gauge_groups))
 
         return sample
 

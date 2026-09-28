@@ -1,3 +1,7 @@
+import re
+from fractions import Fraction
+from functools import cached_property
+
 from common.utils import *
 
 from torch_geometric.data import Data
@@ -8,6 +12,28 @@ import torch
 
 t, y = sp.symbols("t y")
 
+# Match complete terms at a cursor: exponent signs must not split terms.
+_NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_T_POWER = rf"(?:{_NUMBER}|\(\s*(?:[+-]?\d+\s*/\s*\d+|{_NUMBER})\s*\))"
+_Y_POWER = r"(?:[+-]?\d+|\(\s*[+-]?\d+\s*\))"
+_INDEX_TERM = re.compile(
+    rf"""
+    \s*(?P<sign>[+-]?)\s*
+    (?:
+        (?P<wrapped>\()?\s*
+        (?(wrapped)(?P<inner_sign>[+-]?)\s*)
+        (?:(?P<coefficient>\d+)\s*\*\s*)?t
+        (?:\s*(?:\^|\*\*)\s*(?P<t_power>{_T_POWER}))?
+        (?(wrapped)\s*\))
+        (?:\s*(?P<y_operator>[*/])\s*y
+            (?:\s*(?:\^|\*\*)\s*(?P<y_power>{_Y_POWER}))?
+        )?
+        |(?P<constant>\d+)
+    )\s*
+    """,
+    re.VERBOSE | re.ASCII,
+)
+
 
 class SuperConformalIndex:
     """
@@ -16,59 +42,40 @@ class SuperConformalIndex:
     def __init__(self, index: str) -> None:
         """Parse a reduced, unrefined index with integer coefficients.
 
-        The input must be a finite sum of t**a * y**b, with rational a and
-        integer b. Spectra retain signed index contributions. For scalar
+        The input must be a flat sum of integer-coefficient terms t^a,
+        t^a*y^b, or t^a/y^b. Numerator parentheses such as (2*t^a)/y,
+        constants, and ** notation are supported. Exponents a may be decimal,
+        scientific-notation, or parenthesized rational literals; b is integer.
+        Products involving sums and additional variables are rejected.
+
+        Parsing and spectrum extraction use exact integers and fractions.
+        The symbolic index and short_index are constructed only on access.
+        Spectra retain signed index contributions. For scalar
         chiral primaries, a / 2 is the scaling dimension; this interpretation
         does not apply to every multiplet contributing to the index.
         """
-        self.index = sp.expand(sp.sympify(
-            index,
-            locals={"t": t, "y": y},
-            rational=True,
-            convert_xor=True
-        ))
-        self.terms_list = []
-        short_terms = []
-        for term in sp.Add.make_args(self.index):
-            if term == 0:
-                continue
-            coeff, monomial = term.as_coeff_Mul()
-            powers = monomial.as_powers_dict()
-            t_exp = powers.get(t, sp.S.Zero)
-            y_exp = powers.get(y, sp.S.Zero)
-            if (coeff.is_Integer is not True
-                    or t_exp.is_Rational is not True
-                    or y_exp.is_Integer is not True
-                    or monomial != t**t_exp * y**y_exp):
-                raise ValueError(f"Unsupported index term: {term}")
-            self.terms_list.append([int(coeff), float(t_exp), float(y_exp)])
-            if t_exp < 6:
-                short_terms.append(term)
-
+        self._coefficients = self._parse_index(index)
+        self.terms_list = [
+            [coeff, float(t_exp), float(y_exp)]
+            for (t_exp, y_exp), coeff in sorted(self._coefficients.items())
+        ]
         self.terms_list.sort(key=lambda row: (row[1], row[2]))
-        self.short_index = sp.Add(*short_terms)
         # Marginal operators minus the dimension of the IR flavor symmetry.
-        self.num_dim3_minus_f = int(self.index.coeff(y, 0).coeff(t, 6))
+        self.num_dim3_minus_f = self._coefficients.get((Fraction(6), 0), 0)
 
         # In an SU(2) character expansion, the spin-j coefficient is
         # [y**(2*j)] I - [y**(2*j+2)] I. Subtract before extracting powers of t:
         # the first coefficient may vanish even when the difference is nonzero.
-        scalar = self._extract_spectrum(
-            self.index.coeff(y, 0) - self.index.coeff(y, 2)
-        )
-        fermion = self._extract_spectrum(
-            -self.index.coeff(y, 1) + self.index.coeff(y, 3)
-        )
-        boson = self._extract_spectrum(
-            self.index.coeff(y, 2) - self.index.coeff(y, 4)
-        )
+        scalar = self._extract_spectrum(self._coefficients, 0, 2)
+        fermion = self._extract_spectrum(self._coefficients, 3, 1)
+        boson = self._extract_spectrum(self._coefficients, 2, 4)
 
         # Keep exact dimensions through subtraction and cutoff comparisons;
         # public fields retain their existing Python float/int representation.
         self.spectrum = {float(dim): cnt for dim, cnt in scalar.items()}
         self.dims = [
             float(dim) for dim, cnt in scalar.items()
-            if dim <= 3 or cnt > 0
+            if dim < 3 or cnt > 0
         ]
         self.relevant_spectrum = {
             float(dim): cnt for dim, cnt in scalar.items() if dim < 3
@@ -85,18 +92,86 @@ class SuperConformalIndex:
         self.boson_dims = list(self.boson_spectrum)
 
     @staticmethod
-    def _extract_spectrum(expr: sp.Expr) -> dict[sp.Rational, int]:
-        """Collect signed coefficients by exact half-exponent, excluding t**0."""
+    def _parse_index(index: str) -> dict[tuple[Fraction, int], int]:
+        """Collect flat monomials without evaluating symbolic expressions."""
+        if not isinstance(index, str) or not index.strip():
+            raise ValueError("Index must be a nonempty string; use '0' for zero.")
+
+        coefficients = {}
+        position = 0
+        while position < len(index):
+            match = _INDEX_TERM.match(index, position)
+            if match is None or (position and not match["sign"]):
+                raise ValueError(
+                    f"Unsupported index syntax at position {position}: "
+                    f"{index[position:position + 40]!r}"
+                )
+            sign = -1 if match["sign"] == "-" else 1
+            if match["constant"] is not None:
+                t_exp, y_exp = Fraction(0), 0
+                coeff = int(match["constant"])
+            else:
+                if match["inner_sign"] == "-":
+                    sign = -sign
+                coeff = int(match["coefficient"] or "1")
+                power = match["t_power"] or "1"
+                if power.startswith("("):
+                    power = "".join(power[1:-1].split())
+                try:
+                    t_exp = Fraction(power)
+                except (ValueError, ZeroDivisionError) as error:
+                    raise ValueError(f"Invalid t exponent: {power!r}") from error
+
+                y_exp = 0
+                if match["y_operator"] is not None:
+                    power = match["y_power"] or "1"
+                    y_exp = int("".join(power.strip("()").split()))
+                    if match["y_operator"] == "/":
+                        y_exp = -y_exp
+
+            key = (t_exp, y_exp)
+            coefficients[key] = coefficients.get(key, 0) + sign * coeff
+            position = match.end()
+
+        return {key: coeff for key, coeff in coefficients.items() if coeff != 0}
+
+    @cached_property
+    def index(self) -> sp.Expr:
+        """Full symbolic expression, built lazily for API compatibility."""
+        return self._symbolic_index(self._coefficients.items())
+
+    @cached_property
+    def short_index(self) -> sp.Expr:
+        """Symbolic terms with exact t exponent < 6, built only on access."""
+        return self._symbolic_index(
+            (key, coeff) for key, coeff in self._coefficients.items() if key[0] < 6
+        )
+
+    @staticmethod
+    def _symbolic_index(terms) -> sp.Expr:
+        return sp.Add(*(
+            coeff * t**sp.Rational(a.numerator, a.denominator) * y**b
+            for (a, b), coeff in terms
+        ))
+
+    @staticmethod
+    def _extract_spectrum(
+        coefficients: dict[tuple[Fraction, int], int],
+        positive_weight: int,
+        negative_weight: int,
+    ) -> dict[Fraction, int]:
+        """Subtract character weights at exact half-exponents, excluding t**0."""
         spectrum = {}
-        for term in sp.Add.make_args(sp.expand(expr)):
-            if term == 0:
+        for (exponent, weight), coeff in coefficients.items():
+            if weight == negative_weight:
+                coeff = -coeff
+            elif weight != positive_weight:
                 continue
-            coeff, exponent = term.as_coeff_exponent(t)
             # The identity is not an operator counted in the reduced spectrum.
             if exponent == 0:
                 continue
             dim = exponent / 2
-            spectrum[dim] = spectrum.get(dim, 0) + int(coeff)
+            spectrum[dim] = spectrum.get(dim, 0) + coeff
         return {dim: cnt for dim, cnt in sorted(spectrum.items()) if cnt != 0}
 
     def featurize_dimensions(self, grid: np.ndarray, kde_bandwidth: float) -> np.ndarray:
