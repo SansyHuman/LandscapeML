@@ -1,4 +1,4 @@
-"""Model definition for spectrum completion with signed coefficients; no training loop."""
+"""Train and evaluate spectrum completion with signed coefficients."""
 
 import math
 import datetime
@@ -157,7 +157,11 @@ class HigherSpectrumPredictModel(nn.Module):
     (input_cutoff, output_cutoff]. Real coefficients must be nonzero signed
     integers; omit zero-coefficient levels. The pair layout and dimension
     cutoffs are unchanged. Positive input coefficients are still supported.
-    Inputs must use the model's floating dtype and device.
+    Inputs must use the model's floating dtype and device. With use_amp=True,
+    keep parameters and raw pairs in float32: only the embeddings and
+    Transformer run under BF16 autocast. Prediction heads, dimension
+    arithmetic, and losses retain float32 precision. BF16 does not require
+    the gradient scaling used for FP16 mixed precision.
 
     ``src_pad`` and ``tgt_pad`` are Boolean masks of shapes [B, L] and [B, M];
     True means padding. Omitted masks mean every pair is real. Source order is
@@ -214,6 +218,7 @@ class HigherSpectrumPredictModel(nn.Module):
         input_cutoff: float = 2.25,
         output_cutoff: float = 4.5,
         dtype: torch.dtype = torch.float32,
+        use_amp: bool = False,
     ):
         super().__init__()
         sizes = (d_model, nhead, num_encoder_layers, num_decoder_layers,
@@ -227,11 +232,14 @@ class HigherSpectrumPredictModel(nn.Module):
         if not (math.isfinite(input_cutoff) and math.isfinite(output_cutoff)
                 and 0 < input_cutoff < output_cutoff):
             raise ValueError("Cutoffs must be finite and satisfy 0 < input < output.")
+        if use_amp and dtype != torch.float32:
+            raise ValueError("BF16 mixed precision requires float32 model parameters.")
 
         self.d_model = d_model
         self.num_gap_components = num_gap_components
         self.input_cutoff = float(input_cutoff)
         self.output_cutoff = float(output_cutoff)
+        self.use_amp = use_amp
 
         self.src_embed = nn.Sequential(
             nn.Linear(2, d_model),
@@ -369,13 +377,23 @@ class HigherSpectrumPredictModel(nn.Module):
         encoding[:, 1::2] = angles[:, :self.d_model // 2].cos()
         return encoding.to(dtype=reference.dtype).unsqueeze(0)
 
+    def _backbone_autocast(self):
+        if self.use_amp and self.bos.dtype != torch.float32:
+            raise ValueError("Keep AMP model parameters in float32; do not call half() or bfloat16().")
+        return torch.autocast(
+            device_type=self.bos.device.type, dtype=torch.bfloat16,
+            enabled=self.use_amp,
+        )
+
     def encode(self, x: torch.Tensor, src_pad: torch.Tensor | None = None) -> torch.Tensor:
         """Return [B, L, d_model] memory without source positional encodings."""
         x, src_pad = self._prepare_pairs(x, src_pad, target=False)
-        memory = self.encoder(
-            self.src_embed(self._features(x, self.input_cutoff)),
-            src_key_padding_mask=src_pad,
-        )
+        features = self._features(x, self.input_cutoff)
+        with self._backbone_autocast():
+            memory = self.encoder(
+                self.src_embed(features),
+                src_key_padding_mask=src_pad,
+            )
         return memory.masked_fill(src_pad.unsqueeze(-1), 0)
 
     def decode(
@@ -405,38 +423,50 @@ class HigherSpectrumPredictModel(nn.Module):
         if previous_y.size(0) != batch_size:
             raise ValueError("Source and target batch sizes must match.")
 
-        embedded = self.tgt_embed(self._features(previous_y, self.output_cutoff))
-        embedded = torch.cat((self.bos.expand(batch_size, -1, -1), embedded), dim=1)
-        embedded = embedded + self._positions(embedded.size(1), embedded)
+        features = self._features(previous_y, self.output_cutoff)
         step_pad = torch.cat((tgt_pad.new_zeros(batch_size, 1), tgt_pad), dim=1)
         causal_mask = torch.ones(
-            embedded.size(1), embedded.size(1), device=embedded.device, dtype=torch.bool,
+            step_pad.size(1), step_pad.size(1), device=memory.device, dtype=torch.bool,
         ).triu(diagonal=1)
-        hidden = self.decoder(
-            tgt=embedded,
-            memory=memory,
-            tgt_mask=causal_mask,
-            tgt_key_padding_mask=step_pad,
-            memory_key_padding_mask=src_pad,
-        ).masked_fill(step_pad.unsqueeze(-1), 0)
+        with self._backbone_autocast():
+            embedded = self.tgt_embed(features)
+            # A float32 BOS would promote the entire decoder input to float32.
+            bos = self.bos.to(dtype=embedded.dtype).expand(batch_size, -1, -1)
+            embedded = torch.cat((bos, embedded), dim=1)
+            embedded = embedded + self._positions(embedded.size(1), embedded)
+            hidden = self.decoder(
+                tgt=embedded,
+                memory=memory,
+                tgt_mask=causal_mask,
+                tgt_key_padding_mask=step_pad,
+                memory_key_padding_mask=src_pad,
+            ).masked_fill(step_pad.unsqueeze(-1), 0)
 
-        gap_logits, raw_alpha, raw_beta = self.gap_head(hidden).chunk(3, dim=-1)
-        prediction = {
-            "hidden": hidden,
-            "stop_logits": self.stop_head(hidden).squeeze(-1),
-            "endpoint_logits": self.endpoint_head(hidden).squeeze(-1),
-            "gap_logits": gap_logits,
-            "gap_alpha": F.softplus(raw_alpha) + 1e-4,
-            "gap_beta": F.softplus(raw_beta) + 1e-4,
+        prediction = self._dimension_parameters(hidden)
+        prediction.update({
             "previous_dimensions": torch.cat((
                 previous_y.new_full((batch_size, 1), self.input_cutoff),
                 previous_y[..., 0],
             ), dim=1),
             "step_pad": step_pad,
-        }
+        })
         if next_dimensions is not None:
-            prediction.update(self.multiplicity_parameters(hidden, next_dimensions))
+            prediction.update(self.multiplicity_parameters(prediction["hidden"], next_dimensions))
         return prediction
+
+    def _dimension_parameters(self, hidden: torch.Tensor) -> dict[str, torch.Tensor]:
+        # Share the FP32 heads between full-prefix training and cached inference.
+        with torch.autocast(device_type=hidden.device.type, enabled=False):
+            hidden = hidden.to(dtype=self.bos.dtype)
+            gap_logits, raw_alpha, raw_beta = self.gap_head(hidden).chunk(3, dim=-1)
+            return {
+                "hidden": hidden,
+                "stop_logits": self.stop_head(hidden).squeeze(-1),
+                "endpoint_logits": self.endpoint_head(hidden).squeeze(-1),
+                "gap_logits": gap_logits,
+                "gap_alpha": F.softplus(raw_alpha) + 1e-4,
+                "gap_beta": F.softplus(raw_beta) + 1e-4,
+            }
 
     def forward(
         self,
@@ -484,12 +514,14 @@ class HigherSpectrumPredictModel(nn.Module):
         """
         if next_dimensions.shape != hidden.shape[:-1]:
             raise ValueError("next_dimensions must have shape hidden.shape[:-1].")
-        features = torch.cat((
-            hidden, (next_dimensions / self.output_cutoff).unsqueeze(-1),
-        ), dim=-1)
-        sign_logits, raw_positive_count, positive_logits, raw_negative_count, negative_logits = (
-            self.count_head(features).unbind(dim=-1)
-        )
+        with torch.autocast(device_type=hidden.device.type, enabled=False):
+            features = torch.cat((
+                hidden.to(dtype=self.bos.dtype),
+                (next_dimensions.to(dtype=self.bos.dtype) / self.output_cutoff).unsqueeze(-1),
+            ), dim=-1)
+            sign_logits, raw_positive_count, positive_logits, raw_negative_count, negative_logits = (
+                self.count_head(features).unbind(dim=-1)
+            )
         return {
             "count_sign_logits": sign_logits,
             "count_positive_total_count": F.softplus(raw_positive_count) + 1e-4,
@@ -904,6 +936,7 @@ def _save_gradient_failure(model, batch, parts, batch_index, c, rng_state) -> Pa
             "input_cutoff": model.input_cutoff,
             "output_cutoff": model.output_cutoff,
             "dtype": model.bos.dtype,
+            "use_amp": model.use_amp,
         },
         "model_state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
         "gradients": {k: p.grad.detach().cpu() for k, p in model.named_parameters() if p.grad is not None},
@@ -1075,7 +1108,13 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print("Device:", device)
 
-    model = HigherSpectrumPredictModel(input_cutoff=lower_cutoff, output_cutoff=higher_cutoff).to(device)
+    # PyTorch exposes both CUDA and ROCm GPUs through the "cuda" device type.
+    # Use float32 on other devices or GPUs without native BF16 support.
+    use_amp = device.type == "cuda" and torch.cuda.is_bf16_supported(including_emulation=False)
+    print("Precision:", "BF16 mixed precision (FP32 data and heads)" if use_amp else "FP32")
+    model = HigherSpectrumPredictModel(
+        input_cutoff=lower_cutoff, output_cutoff=higher_cutoff, use_amp=use_amp,
+    ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     best_loss = 1e10
@@ -1096,7 +1135,7 @@ if __name__ == "__main__":
         train(dataloader_train, model, optimizer, device)
 
         print(f"Test epoch {epoch + 1}...")
-        total = test(dataloader_test, model, device, generate_prediction=(epoch + 1) % 5 == 0)
+        total = test(dataloader_test, model, device, generate_prediction=(epoch + 1) % 10 == 0)
 
         print(f"Epoch {epoch + 1}/{n_epochs}")
         for k, v in total.items():

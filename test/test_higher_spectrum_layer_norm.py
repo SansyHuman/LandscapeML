@@ -3,9 +3,9 @@ import unittest
 import torch
 from torch import nn
 
+from common.utils import ROCmSafeLayerNorm as _ROCmSafeLayerNorm
 from predict.main_higher_spectrum_predict import (
     HigherSpectrumPredictModel,
-    _ROCmSafeLayerNorm,
     spectrum_loss,
 )
 
