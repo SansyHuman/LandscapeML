@@ -1,0 +1,40 @@
+# Direct dependencies for the whole project, including analysis and test scripts.
+# Versions match the working Linux environment as of 2026-09-29; torch uses
+# the public release version so pip can select the native macOS package.
+# Transitive dependencies are installed automatically by pip.
+#
+# Mac target: Apple Silicon (arm64), macOS 14+, standard CPython 3.13 or 3.14.
+# The scripts use sys._is_gil_enabled(), which requires CPython 3.13+.
+# These pins are not an Intel Mac installation configuration.
+#
+# Create a NEW virtual environment on the Mac; do not copy the Linux .venv.
+# From the project root, for example:
+#   python3.13 -m venv .venv
+#   source .venv/bin/activate
+#   python -m pip install --upgrade pip
+#   python -m pip install -r requirements.txt
+#
+# PySpark also needs Java installed separately (JDK 17 or 21 recommended),
+# with JAVA_HOME set. See:
+# https://spark.apache.org/docs/4.1.2/api/python/getting_started/install.html
+# Set PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON to the Mac venv's Python.
+# Run the spectrum predictor from predict/ with the project root on PYTHONPATH.
+# The Linux-only TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL setting is not needed.
+
+# Model training, prediction, and graph data
+torch==2.12.0
+torch-geometric==2.7.0
+
+# Numerical computation and symbolic index parsing
+numpy==2.4.6
+scipy==1.17.1
+sympy==1.14.0
+
+# Data loading and classical machine learning
+pyspark==4.1.2
+scikit-learn==1.8.0
+
+# Plotting, graph utilities, and feature attribution
+matplotlib==3.10.9
+networkx==3.6.1
+shap==0.52.0

@@ -939,19 +939,18 @@ def train(loader: DataLoader, model: HigherSpectrumPredictModel, optimizer: Opti
             "cuda": torch.cuda.get_rng_state(x.device) if x.is_cuda else None,
         }
 
-        with torch.autograd.detect_anomaly(check_nan=True):
-            loss, parts = spectrum_loss(model, x, y_true, src_pad, tgt_pad)
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
-            loss += c * l1_norm
+        loss, parts = spectrum_loss(model, x, y_true, src_pad, tgt_pad)
+        l1_norm = sum(p.abs().sum() for p in model.parameters())
+        loss += c * l1_norm
 
-            if not torch.isfinite(loss).item():
-                values = {
-                    name: value.detach().item()
-                    for name, value in parts.items()
-                }
-                raise FloatingPointError(f"Non-finite loss in batch {i}: {values}")
+        if not torch.isfinite(loss).item():
+            values = {
+                name: value.detach().item()
+                for name, value in parts.items()
+            }
+            raise FloatingPointError(f"Non-finite loss in batch {i}: {values}")
 
-            loss.backward()
+        loss.backward()
 
         try:
             _clip_training_gradients(model, max_norm=1.0)
@@ -1068,7 +1067,14 @@ if __name__ == "__main__":
         print('src_pad shape: ', src_pad.shape, end=' ')
         print('tgt_pad shape: ', tgt_pad.shape)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    print("Device:", device)
+
     model = HigherSpectrumPredictModel(input_cutoff=lower_cutoff, output_cutoff=higher_cutoff).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -1080,7 +1086,7 @@ if __name__ == "__main__":
     file_suffix = f"{gauge_group}_{lower_cutoff}_{higher_cutoff}"
     if os.path.isfile(checkpoint_path):
         print('Checkpoint available. Loads checkpoint...')
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         best_loss = checkpoint['best_loss']
@@ -1106,7 +1112,7 @@ if __name__ == "__main__":
                 "best_loss": best_loss
             }, checkpoint_path)
 
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     best_loss = checkpoint['best_loss']
